@@ -514,3 +514,47 @@ pre {
     transition: none !important;
   }
 }
+
+/* ---- Sharing --------------------------------------------------------------------------------- */
+
+select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1.5px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.5rem 0.6rem;
+}
+.members {
+  margin-top: 2.5rem;
+  max-width: 48rem;
+}
+.people {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 1rem;
+}
+.people li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.preview {
+  background: var(--surface);
+  border-left: 4px solid var(--orange);
+  padding: 0.25rem 1.25rem 1rem;
+  margin: 1.5rem 0;
+  max-width: 48rem;
+}
+.prompt-body {
+  background: var(--surface);
+  padding: 1rem 1.25rem;
+  max-width: 48rem;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+.preview .prompt-body {
+  padding: 0;
+}

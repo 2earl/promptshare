@@ -1,8 +1,11 @@
 import { Hono } from 'hono';
+import { ProfileError, handleOf, setHandle } from '../profiles';
 import {
   PromptError,
+  copyPrompt,
   deletePrompt,
   getPrompt,
+  publishPrompt,
   savePrompt,
   searchPrompts,
   unpublishPrompt,
@@ -10,11 +13,18 @@ import {
 } from '../prompts';
 import {
   SessionError,
+  acceptInvitation,
+  createInvitation,
   createSession,
   deleteEntry,
   deleteSession,
+  listInvitations,
+  listMembers,
   listSessions,
   loadSession,
+  previewInvitation,
+  removeMember,
+  revokeInvitation,
   saveToSession,
 } from '../sessions';
 import {
@@ -162,9 +172,10 @@ export function createApp(now: () => number) {
     return c.redirect('/', 303);
   });
 
-  app.get('/account', (c) => {
+  app.get('/account', async (c) => {
     const uid = requireUser(c);
-    return typeof uid === 'string' ? html(c, pages.accountPage()) : uid;
+    if (typeof uid !== 'string') return uid;
+    return html(c, pages.accountPage(await handleOf(c.env.DB, uid)));
   });
 
   // ---- Prompts ----------------------------------------------------------------------------------
@@ -321,6 +332,7 @@ export function createApp(now: () => number) {
     uid: string,
     error: string | null,
     draft = { text: '', label: '' },
+    newLink: string | null = null,
   ) {
     const id = c.req.param('id') ?? '';
     const session = await loadSession(
@@ -331,7 +343,23 @@ export function createApp(now: () => number) {
       c.req.query('before'),
     );
     if (!session) return notFound(c, 'session');
-    return html(c, pages.sessionView({ id, ...session }, error, draft), error ? 400 : 200);
+    const members = (await listMembers(c.env.DB, uid, id)) ?? [];
+    const invitations = await listInvitations(c.env.DB, uid, c.get('now'), id);
+    return html(
+      c,
+      pages.sessionView({ id, ...session, members, invitations }, error, draft, newLink),
+      error ? 400 : 200,
+    );
+  }
+
+  /** Sharing needs a handle: send the user to choose one, then back. */
+  async function requireHandle(
+    c: AppContext,
+    uid: string,
+    returnTo: string,
+  ): Promise<Response | null> {
+    if (await handleOf(c.env.DB, uid)) return null;
+    return c.redirect(`/welcome?return=${encodeURIComponent(returnTo)}`, 303);
   }
 
   app.get('/sessions/:id', async (c) => {
@@ -394,6 +422,205 @@ export function createApp(now: () => number) {
     if (typeof uid !== 'string') return uid;
     if (!(await deleteSession(c.env.DB, uid, c.req.param('id')))) return notFound(c, 'session');
     return c.redirect('/sessions', 303);
+  });
+
+  // ---- Members and invitations (website only: DESIGN D7) ------------------------------------
+
+  app.post('/sessions/:id/invitations', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const id = c.req.param('id');
+    const needsHandle = await requireHandle(c, uid, `/sessions/${id}`);
+    if (needsHandle) return needsHandle;
+    const role = (await c.req.parseBody()).role === 'viewer' ? 'viewer' : 'editor';
+    try {
+      const created = await createInvitation(
+        c.env.DB,
+        c.env.SESSION_PEPPER,
+        uid,
+        c.get('now'),
+        id,
+        role,
+      );
+      if (!created) return notFound(c, 'session');
+      return await showSession(
+        c,
+        uid,
+        null,
+        undefined,
+        `${c.env.SITE_ORIGIN}/join/${created.token}`,
+      );
+    } catch (error) {
+      if (!(error instanceof SessionError)) throw error;
+      return showSession(c, uid, error.message);
+    }
+  });
+
+  app.post('/sessions/:id/invitations/:invitation/revoke', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    if (!(await revokeInvitation(c.env.DB, uid, c.req.param('id'), c.req.param('invitation')))) {
+      return notFound(c, 'invitation');
+    }
+    return c.redirect(`/sessions/${c.req.param('id')}`, 303);
+  });
+
+  app.post('/sessions/:id/members/:member/remove', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    if (!(await removeMember(c.env.DB, uid, c.req.param('id'), c.req.param('member')))) {
+      return notFound(c, 'member');
+    }
+    return c.redirect(`/sessions/${c.req.param('id')}`, 303);
+  });
+
+  app.post('/sessions/:id/leave', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    if (!(await removeMember(c.env.DB, uid, c.req.param('id'), uid))) return notFound(c, 'session');
+    return c.redirect('/sessions', 303);
+  });
+
+  app.get('/join/:token', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const token = c.req.param('token');
+    const needsHandle = await requireHandle(c, uid, `/join/${token}`);
+    if (needsHandle) return needsHandle;
+    const invitation = await previewInvitation(
+      c.env.DB,
+      c.env.SESSION_PEPPER,
+      uid,
+      c.get('now'),
+      token,
+    );
+    if (!invitation) {
+      return html(
+        c,
+        pages.problem(
+          viewer(c),
+          'Link not valid',
+          'This invitation link was used, revoked or has expired. Ask for a new one.',
+        ),
+        404,
+      );
+    }
+    return html(c, pages.joinPage(invitation, token));
+  });
+
+  app.post('/join/:token', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const token = c.req.param('token');
+    const needsHandle = await requireHandle(c, uid, `/join/${token}`);
+    if (needsHandle) return needsHandle;
+    const sessionId = await acceptInvitation(
+      c.env.DB,
+      c.env.SESSION_PEPPER,
+      uid,
+      c.get('now'),
+      token,
+    );
+    if (!sessionId) {
+      return html(
+        c,
+        pages.problem(
+          viewer(c),
+          'Link not valid',
+          'This invitation link was used, revoked or has expired.',
+        ),
+        404,
+      );
+    }
+    return c.redirect(`/sessions/${sessionId}`, 303);
+  });
+
+  // ---- Handle, explore, publishing --------------------------------------------------------------
+
+  app.get('/welcome', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const current = await handleOf(c.env.DB, uid);
+    return html(
+      c,
+      pages.handlePage(current, current ?? '', null, safeReturnTo(c.req.query('return'))),
+    );
+  });
+
+  app.post('/welcome', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const returnTo = safeReturnTo(c.req.query('return'));
+    const value = text((await c.req.parseBody()).handle);
+    try {
+      await setHandle(c.env.DB, uid, c.get('now'), value);
+      return c.redirect(returnTo ?? '/account', 303);
+    } catch (error) {
+      if (!(error instanceof ProfileError)) throw error;
+      return html(
+        c,
+        pages.handlePage(await handleOf(c.env.DB, uid), value, error.message, returnTo),
+        400,
+      );
+    }
+  });
+
+  app.get('/explore', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const query = c.req.query('q') ?? '';
+    return html(
+      c,
+      pages.explore(await searchPrompts(c.env.DB, uid, { query, scope: 'public' }), query),
+    );
+  });
+
+  app.get('/p/:id', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const prompt = await getPrompt(c.env.DB, uid, c.req.param('id'));
+    if (!prompt) return notFound(c, 'prompt');
+    return html(c, pages.publicPrompt(prompt, c.env.SITE_ORIGIN));
+  });
+
+  app.post('/p/:id/copy', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    try {
+      const copy = await copyPrompt(c.env.DB, uid, c.get('now'), c.req.param('id'));
+      if (!copy) return notFound(c, 'prompt');
+      return c.redirect(`/prompts/${copy.id}`, 303);
+    } catch (error) {
+      if (!(error instanceof PromptError)) throw error;
+      return html(c, pages.problem(viewer(c), 'Not copied', error.message), 400);
+    }
+  });
+
+  app.get('/prompts/:id/publish', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const prompt = await ownPrompt(c, uid);
+    if (!prompt) return notFound(c, 'prompt');
+    const handle = await handleOf(c.env.DB, uid);
+    if (!handle)
+      return c.redirect(
+        `/welcome?return=${encodeURIComponent(`/prompts/${prompt.id}/publish`)}`,
+        303,
+      );
+    return html(c, pages.publishPreview(prompt, handle));
+  });
+
+  app.post('/prompts/:id/publish', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    try {
+      const prompt = await publishPrompt(c.env.DB, uid, c.get('now'), c.req.param('id'));
+      if (!prompt) return notFound(c, 'prompt');
+      return c.redirect(`/p/${prompt.id}`, 303);
+    } catch (error) {
+      if (!(error instanceof PromptError)) throw error;
+      return html(c, pages.problem(viewer(c), 'Not made public', error.message), 400);
+    }
   });
 
   // ---- Contact and reports ------------------------------------------------------------------

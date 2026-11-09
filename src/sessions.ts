@@ -44,6 +44,8 @@ export interface Entry {
   text: string;
   /** The assistant (OAuth client ID) that wrote it. */
   writtenWith: string;
+  /** The author's handle, if they chose one. */
+  author: string | null;
   createdAt: string;
 }
 
@@ -148,9 +150,11 @@ export async function loadSession(
   }
   const { results } = await db
     .prepare(
-      `SELECT id, author_uid, client_id, label, iv, ciphertext, size, created_at FROM session_entries
-       WHERE session_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
-       ORDER BY created_at DESC, id DESC LIMIT ?`,
+      `SELECT e.id, e.author_uid, e.client_id, e.label, e.iv, e.ciphertext, e.size, e.created_at,
+              pr.handle AS author
+       FROM session_entries e LEFT JOIN profiles pr ON pr.uid = e.author_uid
+       WHERE e.session_id = ? AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))
+       ORDER BY e.created_at DESC, e.id DESC LIMIT ?`,
     )
     .bind(sessionId, cutoff, cutoff, cutoffId || '￿', SESSION_LIMITS.loadEntries + 1)
     .all<{
@@ -162,6 +166,7 @@ export async function loadSession(
       ciphertext: number[];
       size: number;
       created_at: number;
+      author: string | null;
     }>();
 
   const entries: Entry[] = [];
@@ -182,6 +187,7 @@ export async function loadSession(
       label: row.label,
       text: await decryptEntry(secret, sessionId, row.id, row.iv, row.ciphertext),
       writtenWith: row.client_id,
+      author: row.author,
       createdAt: iso(row.created_at),
     });
   }
@@ -249,6 +255,7 @@ export async function saveToSession(
     label: cleanLabel,
     text,
     writtenWith: caller.clientId,
+    author: null,
     createdAt: iso(now),
   };
 }
@@ -284,4 +291,231 @@ export async function deleteEntry(
     .bind(entryId, sessionId, uid, role)
     .run();
   return meta.changes > 0;
+}
+
+// ---- Members and invitations (phase C2, website only: DESIGN D7) ------------------------------
+
+export interface Member {
+  uid: string;
+  handle: string | null;
+  role: Role;
+  you: boolean;
+}
+
+export async function listMembers(
+  db: D1Database,
+  uid: string,
+  sessionId: string,
+): Promise<Member[] | null> {
+  if (!(await roleOf(db, uid, sessionId))) return null;
+  const { results } = await db
+    .prepare(
+      `SELECT m.uid, m.role, pr.handle FROM session_members m LEFT JOIN profiles pr ON pr.uid = m.uid
+       WHERE m.session_id = ? ORDER BY m.role = 'owner' DESC, m.added_at`,
+    )
+    .bind(sessionId)
+    .all<{ uid: string; role: Role; handle: string | null }>();
+  return results.map((row) => ({
+    uid: row.uid,
+    handle: row.handle,
+    role: row.role,
+    you: row.uid === uid,
+  }));
+}
+
+/** The owner removes someone; anyone but the owner can remove themselves (leave). */
+export async function removeMember(
+  db: D1Database,
+  uid: string,
+  sessionId: string,
+  memberUid: string,
+): Promise<boolean> {
+  const role = await roleOf(db, uid, sessionId);
+  if (!role) return false;
+  const allowed = memberUid === uid ? role !== 'owner' : role === 'owner';
+  if (!allowed) return false;
+  const { meta } = await db
+    .prepare("DELETE FROM session_members WHERE session_id = ? AND uid = ? AND role != 'owner'")
+    .bind(sessionId, memberUid)
+    .run();
+  return meta.changes > 0;
+}
+
+export const INVITATION_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+const encoder = new TextEncoder();
+
+async function tokenHash(pepper: string, token: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(pepper),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const mac = new Uint8Array(
+    await crypto.subtle.sign('HMAC', key, encoder.encode(`invitation:${token}`)),
+  );
+  return Array.from(mac, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function randomToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+export interface Invitation {
+  id: string;
+  role: 'editor' | 'viewer';
+  expiresAt: string;
+}
+
+/** The owner creates a single-use link; the token is returned once and only its HMAC is kept. */
+export async function createInvitation(
+  db: D1Database,
+  pepper: string,
+  uid: string,
+  now: number,
+  sessionId: string,
+  role: 'editor' | 'viewer',
+): Promise<{ token: string; invitation: Invitation } | null> {
+  if ((await roleOf(db, uid, sessionId)) !== 'owner') return null;
+  const pending = await db
+    .prepare(
+      'SELECT COUNT(*) AS n FROM invitations WHERE session_id = ? AND used_at IS NULL AND expires_at > ?',
+    )
+    .bind(sessionId, now)
+    .first<{ n: number }>();
+  const members = await db
+    .prepare('SELECT COUNT(*) AS n FROM session_members WHERE session_id = ?')
+    .bind(sessionId)
+    .first<{ n: number }>();
+  if ((members?.n ?? 0) + (pending?.n ?? 0) >= SESSION_LIMITS.membersPerSession) {
+    throw new SessionError(
+      `A session can have ${String(SESSION_LIMITS.membersPerSession)} members, counting open invitations. Remove someone or revoke a link first.`,
+    );
+  }
+  const token = randomToken();
+  const id = crypto.randomUUID();
+  await db.batch([
+    db.prepare('DELETE FROM invitations WHERE expires_at < ? AND used_at IS NULL').bind(now),
+    db
+      .prepare(
+        `INSERT INTO invitations (id, token_hash, session_id, role, created_by, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        id,
+        await tokenHash(pepper, token),
+        sessionId,
+        role,
+        uid,
+        now,
+        now + INVITATION_TTL_SECONDS,
+      ),
+  ]);
+  return { token, invitation: { id, role, expiresAt: iso(now + INVITATION_TTL_SECONDS) } };
+}
+
+export async function listInvitations(
+  db: D1Database,
+  uid: string,
+  now: number,
+  sessionId: string,
+): Promise<Invitation[] | null> {
+  if ((await roleOf(db, uid, sessionId)) !== 'owner') return null;
+  const { results } = await db
+    .prepare(
+      `SELECT id, role, expires_at FROM invitations
+       WHERE session_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at`,
+    )
+    .bind(sessionId, now)
+    .all<{ id: string; role: 'editor' | 'viewer'; expires_at: number }>();
+  return results.map((row) => ({ id: row.id, role: row.role, expiresAt: iso(row.expires_at) }));
+}
+
+export async function revokeInvitation(
+  db: D1Database,
+  uid: string,
+  sessionId: string,
+  invitationId: string,
+): Promise<boolean> {
+  if ((await roleOf(db, uid, sessionId)) !== 'owner') return false;
+  const { meta } = await db
+    .prepare('DELETE FROM invitations WHERE id = ? AND session_id = ? AND used_at IS NULL')
+    .bind(invitationId, sessionId)
+    .run();
+  return meta.changes > 0;
+}
+
+export interface InvitationPreview {
+  sessionId: string;
+  title: string;
+  owner: string | null;
+  role: 'editor' | 'viewer';
+  alreadyMember: boolean;
+}
+
+/** What the invitee sees before joining. Null for an unknown, used or expired link. */
+export async function previewInvitation(
+  db: D1Database,
+  pepper: string,
+  uid: string,
+  now: number,
+  token: string,
+): Promise<InvitationPreview | null> {
+  const row = await db
+    .prepare(
+      `SELECT i.session_id, i.role, s.title, pr.handle AS owner FROM invitations i
+       JOIN shared_sessions s ON s.id = i.session_id
+       LEFT JOIN profiles pr ON pr.uid = s.owner_uid
+       WHERE i.token_hash = ? AND i.used_at IS NULL AND i.expires_at > ?`,
+    )
+    .bind(await tokenHash(pepper, token), now)
+    .first<{
+      session_id: string;
+      role: 'editor' | 'viewer';
+      title: string;
+      owner: string | null;
+    }>();
+  if (!row) return null;
+  return {
+    sessionId: row.session_id,
+    title: row.title,
+    owner: row.owner,
+    role: row.role,
+    alreadyMember: (await roleOf(db, uid, row.session_id)) !== null,
+  };
+}
+
+/** Uses the link: once, by a signed-in person pressing Join on the website. */
+export async function acceptInvitation(
+  db: D1Database,
+  pepper: string,
+  uid: string,
+  now: number,
+  token: string,
+): Promise<string | null> {
+  const preview = await previewInvitation(db, pepper, uid, now, token);
+  if (!preview) return null;
+  if (preview.alreadyMember) return preview.sessionId;
+  const hash = await tokenHash(pepper, token);
+  // Claim the link first, so two people can't both use it.
+  const { meta } = await db
+    .prepare(
+      'UPDATE invitations SET used_at = ?, used_by = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?',
+    )
+    .bind(now, uid, hash, now)
+    .run();
+  if (meta.changes === 0) return null;
+  await db
+    .prepare(
+      'INSERT OR IGNORE INTO session_members (session_id, uid, role, added_at) VALUES (?, ?, ?, ?)',
+    )
+    .bind(preview.sessionId, uid, preview.role, now)
+    .run();
+  return preview.sessionId;
 }

@@ -387,3 +387,23 @@ describe('shared sessions', () => {
     expect(huge.texts[0]).toContain('64 KB');
   });
 });
+
+describe('authors (phase C2)', () => {
+  it('shows assistants the author’s handle on public prompts and other members’ entries', async () => {
+    await env.DB.prepare("INSERT INTO profiles VALUES ('user-2', 'grace', 1, 1)").run();
+    const theirs = await publicPrompt('user-2', 'Haiku helper', 'Write a haiku.');
+    const client = await connect('user-1');
+    const found = parsed<{ id: string; author: string }[]>(
+      (await tool(client, 'search_prompts', { scope: 'public' })).texts,
+    );
+    expect(found).toEqual([expect.objectContaining({ id: theirs, author: 'grace' })]);
+
+    const session = parsed<{ id: string }>(
+      (await tool(client, 'create_session', { title: 'S' })).texts,
+    );
+    await addMember(session.id, 'user-2', 'editor');
+    await tool(await connect('user-2'), 'save_to_session', { id: session.id, text: 'hello' });
+    const loaded = (await tool(client, 'load_session', { id: session.id })).texts.join('\n');
+    expect(loaded).toContain('written by @grace');
+  });
+});
