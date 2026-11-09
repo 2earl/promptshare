@@ -38,7 +38,13 @@ assistant path is the gateway's
 | Unlawful public content | Notice and action, statements of reasons, Art. 18 procedure (LEGAL.md) | Browser test of the report → decision path |
 | Size and cost abuse | Limits per prompt, entry, session and user (DESIGN §5); gateway rate limit | Tests |
 | Data left after account deletion | `AccountEvents.deleteUser`, retried by login | Tests |
-| XSS through prompt or entry text on the website | Output escaped; CSP without inline scripts; text never rendered as HTML | Header and rendering tests |
+| XSS through prompt or entry text on the website | Output escaped; CSP `default-src 'none'`, no scripts at all; text never rendered as HTML | Rendering and header tests |
+| Website sign-in: forged callback, replay, code interception, mix-up | `state` bound to a `__Host-` cookie, used once, 10 minutes; PKCE S256; `iss` checked (RFC 9207); code exchanged and token validated over the binding to login, never the public Internet; token discarded after | Tests: replay, wrong state, missing cookie, wrong issuer, wrong verifier |
+| Session theft or fixation on the website | New random session at each sign-in; only its HMAC stored; `__Host-`, Secure, HttpOnly, SameSite=Lax; 12 h idle, 7 days absolute; ended on sign-out and account deletion | Tests |
+| CSRF on website forms | Every POST must carry Origin `https://promptshare.cc` (and same-origin `Sec-Fetch-Site`); SameSite=Lax | Tests: cross-site and missing Origin refused |
+| Open redirect after sign-in | Only same-site paths (`/…`, not `//` or `\`) | Test |
+| Header injection in the owner's notification email | Control characters stripped from headers; Reply-To only for a valid address; subject encoded | Test |
+| Spam through the contact and report forms | Per-network rate limit (10 a minute); length limits; reports stored and read by a person, never acted on automatically | Tests |
 | Supply chain | Exact versions, release delay, Dependabot, CodeQL, lockfile | CI |
 
 ## Residual risks

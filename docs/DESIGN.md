@@ -1,6 +1,6 @@
 # Prompt share: design
 
-Status: **phase P1 built** (assistant tools). P0 reviewed and merged.
+Status: **P1 deployed** (assistant tools); **C1 built** (website).
 
 Related:
 - [2earl/login](https://github.com/2earl/login), the authorization server;
@@ -274,15 +274,16 @@ login's "Download your data" includes it.
 
 ## 10. Phases
 
-| Phase | Deliverable |
-|---|---|
-| P0 | This design, the threat model, LEGAL.md |
-| D1 | Worker with `GatewayMcp` (§6 tools: private prompts, own sessions) and `AccountEvents`; D1; CI, deploy, Terraform. Then: the gateway's entry and binding, login's scopes and registry entry. **An assistant can save and reuse prompts and continue across sessions** |
-| D2 | Website: sign-in with login, handle, manage prompts and sessions, invitations, publishing, report form, moderation, statements of reasons, terms, privacy policy, imprint. **Launch gate: LEGAL.md's owner items done** |
-| D3 | MCP prompts primitive through the gateway; prompt versions |
+| Phase | Deliverable | State |
+|---|---|---|
+| P0 | This design, the threat model, LEGAL.md | Done |
+| P1 | Worker with `GatewayMcp` (§6 tools: private prompts, own sessions) and `AccountEvents`; D1; CI, deploy, Terraform; the gateway's entry and binding; login's scopes and registry entry. **An assistant can save and reuse prompts and continue across sessions** | Done, deployed |
+| P2 / C1 | Website on promptshare.cc: sign-in with login (CIMD client, PKCE), managing your own prompts and sessions, how-to-connect page, contact form (the imprint's second channel), report form (DSA Art. 16), owner notified by email | Built |
+| P2 / C2 | Handle, publishing with preview, invitations, moderation view, statements of reasons; terms and privacy policy on 2earl.com cover Prompt share. **Launch gate: LEGAL.md's owner items done** | |
+| P3 | MCP prompts primitive through the gateway; prompt versions | |
 
-P1 needs neither the website nor the domain, and public prompts can't exist before P2, because
-publishing is a website action. So nothing public is hosted before the legal items are done.
+Public prompts can't exist before C2, because publishing is a website action. So nothing public
+is hosted before the legal items are done.
 
 ## 11. Decisions after review
 
@@ -292,5 +293,6 @@ publishing is a website action. So nothing public is hosted before the legal ite
    Proposed, not yet confirmed.
 3. **HCP workspace** `2earl-promptshare`, working directory `infra`: created by the owner,
    2026-11-09.
-4. **Before phase P2:** `promptshare.cc` must be a zone in the 2earl Cloudflare account; the
+4. **promptshare.cc** is a zone in the 2earl Cloudflare account: confirmed by the owner,
+   2026-11-09. Before C2: the
    LEGAL.md §6 items.

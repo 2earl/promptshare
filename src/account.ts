@@ -20,6 +20,9 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
     db.prepare('DELETE FROM session_entries WHERE author_uid = ?').bind(uid),
     db.prepare('DELETE FROM session_members WHERE uid = ?').bind(uid),
     db.prepare('DELETE FROM prompts WHERE owner_uid = ?').bind(uid),
+    db.prepare('DELETE FROM web_sessions WHERE uid = ?').bind(uid),
+    // Messages and reports stay for their retention period (LEGAL.md §4), no longer saying who.
+    db.prepare('UPDATE messages SET uid = NULL WHERE uid = ?').bind(uid),
     db
       .prepare('UPDATE audit_events SET actor_user_id = ? WHERE actor_user_id = ?')
       .bind(replacement, uid),
@@ -30,7 +33,9 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
             + (SELECT COUNT(*) FROM shared_sessions WHERE owner_uid = ?1)
             + (SELECT COUNT(*) FROM session_members WHERE uid = ?1)
             + (SELECT COUNT(*) FROM session_entries WHERE author_uid = ?1)
-            + (SELECT COUNT(*) FROM audit_events WHERE actor_user_id = ?1) AS n`,
+            + (SELECT COUNT(*) FROM audit_events WHERE actor_user_id = ?1)
+            + (SELECT COUNT(*) FROM web_sessions WHERE uid = ?1)
+            + (SELECT COUNT(*) FROM messages WHERE uid = ?1) AS n`,
     )
     .bind(uid)
     .first<{ n: number }>();
@@ -44,34 +49,42 @@ export async function exportUserData(
   secret: string,
   uid: string,
 ): Promise<Record<string, unknown>> {
-  const [prompts, memberships, entries, events] = await db.batch<Record<string, unknown>>([
-    db
-      .prepare(
-        `SELECT id, title, description, body, tags, models, visibility, status, copied_from,
+  const [prompts, memberships, entries, events, messages] = await db.batch<Record<string, unknown>>(
+    [
+      db
+        .prepare(
+          `SELECT id, title, description, body, tags, models, visibility, status, copied_from,
                 created_at, updated_at, published_at
          FROM prompts WHERE owner_uid = ? ORDER BY created_at`,
-      )
-      .bind(uid),
-    db
-      .prepare(
-        `SELECT s.id, s.title, m.role, m.added_at, s.created_at FROM session_members m
+        )
+        .bind(uid),
+      db
+        .prepare(
+          `SELECT s.id, s.title, m.role, m.added_at, s.created_at FROM session_members m
          JOIN shared_sessions s ON s.id = m.session_id WHERE m.uid = ? ORDER BY s.created_at`,
-      )
-      .bind(uid),
-    // Every entry in sessions the user owns, and the user's own entries everywhere else.
-    db
-      .prepare(
-        `SELECT e.id, e.session_id, e.author_uid, e.client_id, e.label, e.iv, e.ciphertext, e.created_at
+        )
+        .bind(uid),
+      // Every entry in sessions the user owns, and the user's own entries everywhere else.
+      db
+        .prepare(
+          `SELECT e.id, e.session_id, e.author_uid, e.client_id, e.label, e.iv, e.ciphertext, e.created_at
          FROM session_entries e JOIN shared_sessions s ON s.id = e.session_id
          WHERE s.owner_uid = ?1 OR e.author_uid = ?1 ORDER BY e.created_at`,
-      )
-      .bind(uid),
-    db
-      .prepare(
-        'SELECT at, event, client_id, detail FROM audit_events WHERE actor_user_id = ? ORDER BY at',
-      )
-      .bind(uid),
-  ]);
+        )
+        .bind(uid),
+      db
+        .prepare(
+          'SELECT at, event, client_id, detail FROM audit_events WHERE actor_user_id = ? ORDER BY at',
+        )
+        .bind(uid),
+      // Contact messages and reports sent while signed in.
+      db
+        .prepare(
+          'SELECT kind, name, email, content_url, category, body, created_at FROM messages WHERE uid = ? ORDER BY created_at',
+        )
+        .bind(uid),
+    ],
+  );
 
   const decrypted = [];
   for (const row of entries?.results ?? []) {
@@ -119,6 +132,15 @@ export async function exportUserData(
       event: row.event,
       clientId: row.client_id,
       detail: typeof row.detail === 'string' ? (JSON.parse(row.detail) as unknown) : null,
+    })),
+    messages: (messages?.results ?? []).map((row) => ({
+      kind: row.kind,
+      name: row.name,
+      email: row.email,
+      contentUrl: row.content_url,
+      category: row.category,
+      text: row.body,
+      sentAt: iso(row.created_at as number),
     })),
     notes: [
       'sessionEntries has every entry in the sessions you own, and the entries you wrote in other people’s sessions.',

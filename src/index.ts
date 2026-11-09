@@ -4,12 +4,13 @@ import { deleteUserData, exportUserData } from './account';
 import { AUDIT_RETENTION_SECONDS } from './audit';
 import { callerFrom } from './caller';
 import { buildServer } from './tools';
+import { createApp } from './web/app';
 
 /**
  * Prompt share's Worker (docs/DESIGN.md §3):
  * - `GatewayMcp`: the MCP tools, reachable only from the 2earl MCP gateway;
  * - `AccountEvents`: account deletion and export, reachable only from login;
- * - `fetch`: the website at promptshare.cc (phase P2). It never reads `X-2earl-*` headers.
+ * - `fetch`: the website at promptshare.cc. It never reads `X-2earl-*` headers.
  */
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -35,10 +36,11 @@ export class AccountEvents extends WorkerEntrypoint<Env> {
   }
 }
 
+const website = createApp(now);
+
 export default {
-  // No public pages until phase P2, and the Worker has no route yet.
-  fetch(): Response {
-    return new Response('Not found', { status: 404 });
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
+    return website.fetch(request, env, ctx);
   },
 
   async scheduled(_controller, env): Promise<void> {
