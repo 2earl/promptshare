@@ -28,7 +28,7 @@
     {
       "binding": "DB",
       "database_name": "promptshare",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "431ec74b-e3d1-45bd-b3d2-549b9cd64e9d",
       "migrations_dir": "migrations",
     },
   ],

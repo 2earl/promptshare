@@ -2,8 +2,8 @@
 
 **Not legal advice.** This is an engineering checklist: what the law appears to require of a
 service that hosts its users' content, and where each item is met. It was written from public
-sources by someone who is not a lawyer. Before public prompts go live (phase P2), a lawyer
-should review this list and the texts in §5.
+sources by someone who is not a lawyer. No lawyer reviews it (§6 item 4): before public prompts
+go live (phase P2), it is reviewed again against its sources.
 
 Facts it relies on:
 - the operator is an individual in Germany;
@@ -83,10 +83,10 @@ Drafts are written in phase P2 and reviewed before launch.
 
 | # | Item | State |
 |---|---|---|
-| 1 | Contact address for DSA Art. 11 and 12 | **Given:** the address in the 2earl imprint. It goes on promptshare.cc's contact page in phase P2 |
+| 1 | Contact address for DSA Art. 11 and 12 | **Done:** `legal@2earl.com` (Cloudflare Email Routing to the owner's mailbox). It goes on promptshare.cc's contact page in phase P2 |
 | 2 | Imprint | **Exists** at `2earl.com/imprint`. Its scope covers "every other 2earl service that links to it", so promptshare.cc links to it from every page |
-| 3 | Imprint gap: a second fast contact channel besides email | **Open.** Usually a phone number; an electronic contact form that is answered quickly is generally accepted as the alternative [check with a lawyer]. Proposed: promptshare.cc's contact form (phase P2), linked from the imprint |
-| 4 | Lawyer review of this list and the §5 texts | **Open**, before phase P2 launches |
+| 3 | Imprint gap: a second fast contact channel besides email | **Decided** by the owner: a contact form, not a phone number. Built in phase P2 and linked from the 2earl imprint. An electronic form answered quickly is generally accepted as the alternative to a phone number, but this is not settled beyond doubt |
+| 4 | Review of this list and the §5 texts | **Decided** by the owner, 2026-11-09: no lawyer is available; Claude reviews them before phase P2 launches. That review checks the texts against the sources and this list; it is not legal advice, and the owner carries the legal risk |
 | 5 | Cloudflare data processing agreement | **Open:** confirm it applies to the account (it is part of Cloudflare's self-serve terms) |
 | 6 | Records of processing (GDPR Art. 30) | **Open:** a short document for login, the gateway and Prompt share, written with phase P2 |
 | 7 | Terms and privacy policy on 2earl.com cover Prompt share | **Open:** a 2earl/website PR in phase P2 |
