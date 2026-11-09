@@ -8,6 +8,8 @@ import {
   copyPrompt,
   deletePrompt,
   fillPrompt,
+  menuPrompts,
+  ownPromptByPrefix,
   getPromptVersion,
   listPromptVersions,
   restorePromptVersion,
@@ -35,6 +37,7 @@ import {
   updateTask,
   type TaskStatus,
   type Entry,
+  type LoadedSession,
   type EntryKind,
 } from './sessions';
 
@@ -108,6 +111,61 @@ function entryText(entry: Entry): string {
     return `${head} written by you ${writtenWithName(entry.writtenWith)}\n${entry.text}`;
   const by = entry.author ? `@${entry.author}` : 'another member';
   return `${head} written by ${by}\n${untrusted('ENTRY BY ANOTHER MEMBER', entry.text)}`;
+}
+
+/** What load_session returns: a summary of how current the session is, the brief, the entries. */
+function sessionContent(
+  session: LoadedSession,
+  sessionId: string,
+  requested: string,
+): { type: 'text'; text: string }[] {
+  const header = JSON.stringify(
+    {
+      title: session.title,
+      yourRole: session.role,
+      briefVersions: session.briefVersions,
+      entries: session.entries.length,
+      more: session.more,
+      yourPreviousLoad: session.lastLoadedAt,
+      ...(sessionId !== requested ? { id: sessionId } : {}),
+      ...(session.briefState
+        ? {
+            brief: {
+              ...session.briefState,
+              ...(session.briefState.entriesSince > 0
+                ? {
+                    note: `${String(session.briefState.entriesSince)} ${session.briefState.entriesSince === 1 ? 'entry was' : 'entries were'} saved after this brief. If they change where things stand, offer the user an updated brief.`,
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      ...(session.openTasks?.length ? { openTasks: session.openTasks } : {}),
+      ...(session.briefChange
+        ? {
+            briefChangedSinceYourLastLoad: {
+              by: session.briefChange.by ? `@${session.briefChange.by}` : 'another member',
+              ...(session.briefChange.isNew
+                ? { note: 'There was no brief at your last load.' }
+                : {
+                    lines: session.briefChange.lines,
+                    ...(session.briefChange.more ? { more: true } : {}),
+                    ...(session.briefChange.lines.length === 0
+                      ? { note: 'Too long to compare line by line; read the brief below.' }
+                      : {}),
+                  }),
+            },
+          }
+        : {}),
+    },
+    null,
+    2,
+  );
+  return [
+    { type: 'text', text: header },
+    ...(session.brief ? [{ type: 'text' as const, text: entryText(session.brief) }] : []),
+    ...session.entries.map((entry) => ({ type: 'text' as const, text: entryText(entry) })),
+  ];
 }
 
 const id = z.string().min(1).max(64).describe('The ID, as returned by another tool.');
@@ -544,55 +602,7 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
           markReadAt: now(),
         });
         if (!session) return fail('No shared session with that ID that you belong to.');
-        const header = JSON.stringify(
-          {
-            title: session.title,
-            yourRole: session.role,
-            briefVersions: session.briefVersions,
-            entries: session.entries.length,
-            more: session.more,
-            yourPreviousLoad: session.lastLoadedAt,
-            ...(sessionId !== id ? { id: sessionId } : {}),
-            ...(session.briefState
-              ? {
-                  brief: {
-                    ...session.briefState,
-                    ...(session.briefState.entriesSince > 0
-                      ? {
-                          note: `${String(session.briefState.entriesSince)} ${session.briefState.entriesSince === 1 ? 'entry was' : 'entries were'} saved after this brief. If they change where things stand, offer the user an updated brief.`,
-                        }
-                      : {}),
-                  },
-                }
-              : {}),
-            ...(session.openTasks?.length ? { openTasks: session.openTasks } : {}),
-            ...(session.briefChange
-              ? {
-                  briefChangedSinceYourLastLoad: {
-                    by: session.briefChange.by ? `@${session.briefChange.by}` : 'another member',
-                    ...(session.briefChange.isNew
-                      ? { note: 'There was no brief at your last load.' }
-                      : {
-                          lines: session.briefChange.lines,
-                          ...(session.briefChange.more ? { more: true } : {}),
-                          ...(session.briefChange.lines.length === 0
-                            ? { note: 'Too long to compare line by line; read the brief below.' }
-                            : {}),
-                        }),
-                  },
-                }
-              : {}),
-          },
-          null,
-          2,
-        );
-        return {
-          content: [
-            { type: 'text', text: header },
-            ...(session.brief ? [{ type: 'text' as const, text: entryText(session.brief) }] : []),
-            ...session.entries.map((entry) => ({ type: 'text' as const, text: entryText(entry) })),
-          ],
-        };
+        return { content: sessionContent(session, sessionId, id) };
       },
     ),
   );
@@ -831,5 +841,106 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     ),
   );
 
+  // ---- The prompt menu (DESIGN §4.4) -----------------------------------------------------------
+  //
+  // The user's own prompts, and resuming a session, as MCP prompts: assistants that show prompts
+  // offer them in a menu, and what the user picks is sent as their own message. So only the
+  // user's own prompts are listed; a session's other members stay wrapped as theirs.
+
+  server.server.registerCapabilities({ prompts: {} });
+
+  server.server.setRequestHandler('prompts/list', async () => {
+    const prompts: unknown[] = [];
+    if (allows(caller, SCOPES.state)) prompts.push(RESUME_PROMPT);
+    if (allows(caller, SCOPES.read)) {
+      for (const prompt of await menuPrompts(db, caller.uid)) {
+        prompts.push({
+          name: menuName(prompt),
+          title: prompt.title,
+          description: prompt.description || 'One of your prompts in Prompt share.',
+          arguments: prompt.variables.map((v) => ({
+            name: v.name,
+            description: v.default ? `Default: ${v.default}` : `Value for {{${v.name}}}`,
+            required: !v.default,
+          })),
+        });
+      }
+    }
+    return { prompts } as never;
+  });
+
+  server.server.setRequestHandler('prompts/get', async (request) => {
+    const name = request.params.name;
+    const args = request.params.arguments ?? {};
+    if (name === RESUME_PROMPT.name) {
+      if (!allows(caller, SCOPES.state)) throw new Error('This app may not read your sessions.');
+      const wanted = (args.session ?? '').trim();
+      const sessionId = wanted ? await resolveSession(db, caller.uid, wanted) : null;
+      if (!sessionId)
+        throw new Error('No shared session with that title or ID that you belong to.');
+      const session = await loadSession(db, secret, caller.uid, sessionId, {
+        since: 'brief',
+        markReadAt: now(),
+      });
+      if (!session) throw new Error('No shared session with that title or ID that you belong to.');
+      const parts = sessionContent(session, sessionId, wanted);
+      return {
+        description: `Resume “${session.title}”`,
+        messages: [
+          {
+            role: 'user',
+            content: {
+              type: 'text',
+              text: [
+                `Let’s continue the shared session “${session.title}” (Prompt share, ID ${sessionId}). Below are its current brief and the entries saved after it. Read them, tell me in a few lines where things stand and what’s open, then wait for what I want to do. When our work changes where things stand, offer to update the brief.`,
+                ...parts.map((part) => part.text),
+              ].join('\n\n'),
+            },
+          },
+        ],
+      } as never;
+    }
+    if (!allows(caller, SCOPES.read)) throw new Error('This app may not read your prompts.');
+    const prompt = await ownPromptByPrefix(db, caller.uid, menuId(name));
+    if (!prompt) throw new Error('No prompt of yours by that name. It may have been deleted.');
+    const values = Object.fromEntries(
+      Object.entries(args).filter(([, value]) => typeof value === 'string' && value.trim() !== ''),
+    );
+    return {
+      description: prompt.title,
+      messages: [
+        { role: 'user', content: { type: 'text', text: fillPrompt(prompt.body, values).body } },
+      ],
+    } as never;
+  });
+
   return server;
+}
+
+/** The menu entry that loads a session from its brief (DESIGN §4.4). */
+const RESUME_PROMPT = {
+  name: 'resume_session',
+  title: 'Resume a shared session',
+  description:
+    'Loads a shared session’s brief and what was saved after it, so the conversation picks up where it stood.',
+  arguments: [{ name: 'session', description: 'The session’s title or ID.', required: true }],
+};
+
+/**
+ * A prompt's name in the menu: a slug of its title and the start of its ID, e.g.
+ * `release-notes-1a2b3c4d`. The title can change; the ID part keeps the name pointing at it.
+ */
+export function menuName(prompt: { id: string; title: string }): string {
+  const slug = prompt.title
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/, '');
+  return `${slug || 'prompt'}-${prompt.id.slice(0, 8)}`;
+}
+
+function menuId(name: string): string {
+  return name.slice(name.lastIndexOf('-') + 1);
 }

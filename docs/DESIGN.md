@@ -184,6 +184,26 @@ A prompt gets better by trying changes, and a change that made it worse had no w
 - Copies don't carry versions. Deleting a prompt deletes its versions; account deletion deletes
   them all; "Download your data" includes them (§7.2).
 
+### 4.4 The prompt menu (phase P6)
+
+Assistants that support MCP prompts (Claude does, for remote connectors) show them in a menu, and
+what the user picks is sent as their message. That is the most direct way to use a saved prompt.
+
+- `GatewayMcp` declares the `prompts` capability. `prompts/list` has, by the app's permissions:
+  - `resume_session` (needs `state`), with one argument, the session's title or ID;
+  - the user's 50 newest **own** prompts (needs `read`), named `<slug of the title>-<first 8
+    characters of the ID>`, titled with the prompt's title, with its variables (§4.2) as
+    arguments, required unless they have a default.
+- `prompts/get` for a prompt returns one user message: the body, filled in. Empty arguments use
+  the default, as in §4.2.
+- `prompts/get` for `resume_session` returns one user message: an instruction to summarise where
+  things stand, then the same summary, brief and entries as `load_session` with `since: "brief"`.
+  Other members' entries stay wrapped as theirs (THREAT_MODEL.md).
+- **Only the user's own prompts.** A menu prompt is sent as the user's own message, outside the
+  wrapping a tool result gets. Public and shared prompts would put another user's text in the
+  user's mouth, so they stay tools only.
+- The gateway passes prompts through only from first-party services (2earl/mcp DESIGN).
+
 ## 5. Shared sessions
 
 A shared session has a title, an owner and members. Its content is a list of **entries** that
@@ -346,9 +366,8 @@ later, that gets its own permission (`mcp:promptshare.publish`).
 That doesn't make injection impossible (THREAT_MODEL), but it gives the assistant what it needs
 to tell the two apart.
 
-MCP's own **prompts** primitive (`prompts/list`, `prompts/get`) would let clients offer saved
-prompts as slash commands. The gateway proxies tools only today; this is a later phase for both
-repositories.
+MCP's own **prompts** primitive (`prompts/list`, `prompts/get`) offers the user's own prompts and
+resuming a session in the assistant's prompt menu (§4.4); the gateway passes it through.
 
 ## 7. Data (D1 `promptshare`, EU)
 
@@ -456,7 +475,7 @@ login's "Download your data" includes it.
 | S4 | Sessions: load by title, brief freshness, open tasks and brief changes on load, brief updates that can't overwrite a newer version (§5.2) | Built |
 | P4 | Prompt variables with defaults, filled by `get_prompt` (§4.2); resuming a session from its brief (`since: "brief"`, §5.2) | Built |
 | P5 | Earlier versions of a prompt: kept on change, listed, read and restored, by the owner only (§4.3) | Built |
-| P3 | MCP prompts primitive through the gateway | |
+| P6 | The prompt menu: own prompts and resuming a session as MCP prompts, through the gateway (§4.4) | Built |
 
 Public prompts can't exist before C2, because publishing is a website action. So nothing public
 is hosted before the legal items are done.
