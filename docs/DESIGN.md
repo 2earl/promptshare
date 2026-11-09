@@ -168,6 +168,22 @@ notes for {{diff}}"). Without help, the assistant gets the placeholder text and 
   are inside text another user wrote.
 - The website shows the variables under a prompt, and the editor says how to write them.
 
+### 4.3 Earlier versions (phase P5)
+
+A prompt gets better by trying changes, and a change that made it worse had no way back.
+
+- Each change to a prompt's content (title, description, body, tags or models) keeps what it
+  replaced in `prompt_versions`, in the same batch as the change. Changing nothing keeps nothing.
+- The newest 10 versions per prompt are kept.
+- Only the owner sees them: `list_prompt_versions`, `get_prompt` with `version`, and on the
+  website "N earlier versions" under the prompt. The website shows what restoring a version would
+  change, line by line.
+- `restore_prompt_version` (and the website's "Restore this version") makes a version current
+  through the same change path, so what it replaces is kept and restoring can be undone. A public
+  prompt changes for everyone at once, as with any change.
+- Copies don't carry versions. Deleting a prompt deletes its versions; account deletion deletes
+  them all; "Download your data" includes them (§7.2).
+
 ## 5. Shared sessions
 
 A shared session has a title, an owner and members. Its content is a list of **entries** that
@@ -282,9 +298,11 @@ trust: 'first-party' }`. Tools appear to assistants as `promptshare__<tool>`.
 | Tool | Does | Permission |
 |---|---|---|
 | `search_prompts` | Search your prompts, prompts shared with you, and public prompts | `mcp:promptshare.read` |
-| `get_prompt` | One prompt, by ID; with `fill`, its variables filled in (§4.2) | `read` |
+| `get_prompt` | One prompt, by ID; with `fill`, its variables filled in (§4.2); with `version`, an earlier version of yours (§4.3) | `read` |
+| `list_prompt_versions` | Earlier versions of one of your prompts (§4.3) | `read` |
 | `save_prompt` | Create a private prompt | `mcp:promptshare.write` |
 | `update_prompt` | Change your prompt (a public one stays public; the change is visible at once) | `write` |
+| `restore_prompt_version` | Make an earlier version current; what it replaces is kept (§4.3) | `write` |
 | `unpublish_prompt` | Make your public prompt private | `write` |
 | `delete_prompt` | Delete your prompt | `write` |
 | `copy_prompt` | Copy a public or shared prompt into your own | `write` |
@@ -338,6 +356,7 @@ repositories.
 |---|---|---|
 | `profiles` | `uid`, handle, display name | Until account deletion |
 | `prompts` (+ FTS index) | §4 fields, `owner_uid`, copied-from | Until deleted by the owner or account deletion |
+| `prompt_versions` | earlier content of a prompt (title, description, body, tags, models), owner, when saved and replaced | The newest 10 per prompt; until the prompt is deleted or account deletion |
 | `prompt_shares` | prompt, author, recipient's `uid`, the address the author typed | Until the author stops sharing, the recipient removes it, or either account is deleted |
 | `share_misses`, `share_locks` | when an author tried an address without an account; their lock | 1 day |
 | `shared_sessions`, `session_members` | title, owner, members and roles, when each member last loaded the newest entries | Until deleted |
@@ -436,7 +455,8 @@ login's "Download your data" includes it.
 | S3 | Sessions: search within a session, tasks with status and assignee, Markdown export (§5.1) | Built |
 | S4 | Sessions: load by title, brief freshness, open tasks and brief changes on load, brief updates that can't overwrite a newer version (§5.2) | Built |
 | P4 | Prompt variables with defaults, filled by `get_prompt` (§4.2); resuming a session from its brief (`since: "brief"`, §5.2) | Built |
-| P3 | MCP prompts primitive through the gateway; prompt versions | |
+| P5 | Earlier versions of a prompt: kept on change, listed, read and restored, by the owner only (§4.3) | Built |
+| P3 | MCP prompts primitive through the gateway | |
 
 Public prompts can't exist before C2, because publishing is a website action. So nothing public
 is hosted before the legal items are done.

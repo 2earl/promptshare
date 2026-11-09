@@ -63,6 +63,7 @@ export async function resetDatabase(): Promise<void> {
       'session_members',
       'shared_sessions',
       'prompts',
+      'prompt_versions',
       'profiles',
       'audit_events',
     ].map((t) => env.DB.prepare(`DELETE FROM ${t}`)),

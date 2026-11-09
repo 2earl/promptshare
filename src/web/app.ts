@@ -28,6 +28,9 @@ import {
   searchPrompts,
   unpublishPrompt,
   updatePrompt,
+  listPromptVersions,
+  promptVersions,
+  restorePromptVersion,
   type Prompt,
 } from '../prompts';
 import {
@@ -298,8 +301,31 @@ export function createApp(now: () => number) {
       { ...prompt, tags: prompt.tags.join(', '), models: prompt.models.join(', ') },
       null,
       { shares: await listShares(c.env.DB, uid, prompt.id), ...share },
+      (await listPromptVersions(c.env.DB, uid, prompt.id))?.length ?? 0,
     );
   }
+
+  // Earlier versions (DESIGN §4.3): only the owner sees or restores them.
+  app.get('/prompts/:id/versions', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const prompt = await ownPrompt(c, uid);
+    if (!prompt) return notFound(c, 'prompt');
+    return html(
+      c,
+      pages.promptVersionsPage(prompt, (await promptVersions(c.env.DB, uid, prompt.id)) ?? []),
+    );
+  });
+
+  app.post('/prompts/:id/versions/:version/restore', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const id = c.req.param('id');
+    const version = c.req.param('version');
+    if (!(await restorePromptVersion(c.env.DB, uid, c.get('now'), id, version)))
+      return notFound(c, 'prompt');
+    return c.redirect(`/prompts/${id}`, 303);
+  });
 
   app.get('/prompts/:id', async (c) => {
     const uid = requireUser(c);

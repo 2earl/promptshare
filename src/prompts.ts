@@ -18,6 +18,8 @@ export const PROMPT_LIMITS = {
   /** Values given to fill a prompt's variables (§4.2). */
   fillValues: 20,
   fillValue: 8 * 1024,
+  /** Earlier versions kept per prompt (§4.3). */
+  versions: 10,
 } as const;
 
 export interface PromptInput {
@@ -322,23 +324,164 @@ export async function updatePrompt(
     tags: patch.tags ?? current.tags,
     models: patch.models ?? current.models,
   });
-  await db
+  const tags = JSON.stringify(clean.tags);
+  const models = JSON.stringify(clean.models);
+  const changed =
+    clean.title !== current.title ||
+    clean.description !== current.description ||
+    clean.body !== current.body ||
+    tags !== JSON.stringify(current.tags) ||
+    models !== JSON.stringify(current.models);
+  const update = db
     .prepare(
       `UPDATE prompts SET title = ?, description = ?, body = ?, tags = ?, models = ?, updated_at = ?
        WHERE id = ? AND owner_uid = ?`,
     )
-    .bind(
-      clean.title,
-      clean.description,
-      clean.body,
-      JSON.stringify(clean.tags),
-      JSON.stringify(clean.models),
-      now,
-      id,
-      uid,
-    )
-    .run();
+    .bind(clean.title, clean.description, clean.body, tags, models, now, id, uid);
+  if (!changed) {
+    await update.run();
+    return getPrompt(db, uid, id);
+  }
+  // The content as it was becomes a version, in the same batch as the change (§4.3).
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO prompt_versions (id, prompt_id, owner_uid, title, description, body, tags, models, saved_at, replaced_at)
+         SELECT ?, id, owner_uid, title, description, body, tags, models, updated_at, ?
+         FROM prompts WHERE id = ? AND owner_uid = ?`,
+      )
+      .bind(crypto.randomUUID(), now, id, uid),
+    update,
+    db
+      .prepare(
+        `DELETE FROM prompt_versions WHERE prompt_id = ?1 AND id NOT IN (
+           SELECT id FROM prompt_versions WHERE prompt_id = ?1
+           ORDER BY replaced_at DESC, rowid DESC LIMIT ?2)`,
+      )
+      .bind(id, PROMPT_LIMITS.versions),
+  ]);
   return getPrompt(db, uid, id);
+}
+
+export interface PromptVersion {
+  id: string;
+  title: string;
+  description: string;
+  body: string;
+  tags: string[];
+  models: string[];
+  variables: PromptVariable[];
+  /** When this content was saved. */
+  savedAt: string;
+  /** When a change replaced it. */
+  replacedAt: string;
+}
+
+export type PromptVersionSummary = Omit<PromptVersion, 'body' | 'description' | 'variables'> & {
+  /** Size of the body in characters, to tell versions apart at a glance. */
+  length: number;
+};
+
+interface VersionRow {
+  id: string;
+  title: string;
+  description: string;
+  body: string;
+  tags: string;
+  models: string;
+  saved_at: number;
+  replaced_at: number;
+}
+
+function toVersion(row: VersionRow): PromptVersion {
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    body: row.body,
+    tags: JSON.parse(row.tags) as string[],
+    models: JSON.parse(row.models) as string[],
+    variables: variablesOf(row.body),
+    savedAt: iso(row.saved_at),
+    replacedAt: iso(row.replaced_at),
+  };
+}
+
+/** Earlier versions of one of the caller's prompts, newest first, without their text. */
+export async function listPromptVersions(
+  db: D1Database,
+  uid: string,
+  id: string,
+): Promise<PromptVersionSummary[] | null> {
+  const versions = await promptVersions(db, uid, id);
+  return (
+    versions?.map((version) => ({
+      id: version.id,
+      title: version.title,
+      tags: version.tags,
+      models: version.models,
+      length: version.body.length,
+      savedAt: version.savedAt,
+      replacedAt: version.replacedAt,
+    })) ?? null
+  );
+}
+
+/** Earlier versions of one of the caller's prompts, newest first. Null if it isn't theirs. */
+export async function promptVersions(
+  db: D1Database,
+  uid: string,
+  id: string,
+): Promise<PromptVersion[] | null> {
+  const owned = await db
+    .prepare('SELECT 1 FROM prompts WHERE id = ? AND owner_uid = ?')
+    .bind(id, uid)
+    .first();
+  if (!owned) return null;
+  const { results } = await db
+    .prepare(
+      `SELECT * FROM prompt_versions WHERE prompt_id = ? AND owner_uid = ?
+       ORDER BY replaced_at DESC, rowid DESC`,
+    )
+    .bind(id, uid)
+    .all<VersionRow>();
+  return results.map(toVersion);
+}
+
+/** One earlier version of one of the caller's prompts. */
+export async function getPromptVersion(
+  db: D1Database,
+  uid: string,
+  id: string,
+  versionId: string,
+): Promise<PromptVersion | null> {
+  const row = await db
+    .prepare('SELECT * FROM prompt_versions WHERE id = ? AND prompt_id = ? AND owner_uid = ?')
+    .bind(versionId, id, uid)
+    .first<VersionRow>();
+  return row ? toVersion(row) : null;
+}
+
+/**
+ * Makes an earlier version the current content. The content it replaces becomes a version in
+ * turn, so restoring can itself be undone.
+ */
+export async function restorePromptVersion(
+  db: D1Database,
+  uid: string,
+  now: number,
+  id: string,
+  versionId: string,
+): Promise<Prompt | null> {
+  const version = await getPromptVersion(db, uid, id, versionId);
+  if (!version) return null;
+  return updatePrompt(db, uid, now, id, {
+    title: version.title,
+    description: version.description,
+    body: version.body,
+    tags: version.tags,
+    models: version.models,
+  });
 }
 
 export async function unpublishPrompt(
@@ -361,6 +504,7 @@ export async function deletePrompt(db: D1Database, uid: string, id: string): Pro
   const [, deleted] = await db.batch([
     db.prepare('DELETE FROM prompt_shares WHERE prompt_id = ? AND owner_uid = ?').bind(id, uid),
     db.prepare('DELETE FROM prompts WHERE id = ? AND owner_uid = ?').bind(id, uid),
+    db.prepare('DELETE FROM prompt_versions WHERE prompt_id = ? AND owner_uid = ?').bind(id, uid),
   ]);
   return (deleted?.meta.changes ?? 0) > 0;
 }

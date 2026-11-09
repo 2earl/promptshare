@@ -1,6 +1,13 @@
 import { SESSION_LIMITS } from '../sessions';
-import { PROMPT_LIMITS, type Prompt, type PromptSummary, type PromptVariable } from '../prompts';
+import {
+  PROMPT_LIMITS,
+  type Prompt,
+  type PromptSummary,
+  type PromptVariable,
+  type PromptVersion,
+} from '../prompts';
 import { SHARE_LIMITS, type Share } from '../shares';
+import { diffLines } from '../sessions';
 import {
   ENTRY_KINDS,
   type Entry,
@@ -55,7 +62,7 @@ export function layout(title: string, main: string, viewer: Viewer, current = ''
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · Prompt share</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/app.css?v=1">
+<link rel="stylesheet" href="/app.css?v=2">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -122,13 +129,15 @@ export const TOOL_DOCS: { permission: string; tools: [string, string][] }[] = [
     tools: [
       ['search_prompts', 'Search by words; or list the newest'],
       ['get_prompt', 'One prompt with its text; fills its {{variables}}'],
+      ['list_prompt_versions', 'Earlier versions of one of yours'],
     ],
   },
   {
     permission: 'Create, change and delete your prompts',
     tools: [
       ['save_prompt', 'Save a new private prompt'],
-      ['update_prompt', 'Change one of yours'],
+      ['update_prompt', 'Change one of yours; what it replaces is kept'],
+      ['restore_prompt_version', 'Go back to an earlier version'],
       ['copy_prompt', 'Copy a public or shared prompt into yours'],
       ['unpublish_prompt', 'Make your public prompt private'],
       ['delete_prompt', 'Delete one of yours'],
@@ -293,12 +302,13 @@ export function promptEditor(
   form: PromptForm,
   error: string | null,
   share: ShareState = { shares: [], error: null, sharedWith: null },
+  versionCount = 0,
 ): string {
   const action = mode.kind === 'new' ? '/prompts' : `/prompts/${esc(mode.prompt.id)}`;
   const heading = mode.kind === 'new' ? 'New prompt' : form.title || 'Prompt';
   const status =
     mode.kind === 'edit'
-      ? `<p class="muted">${mode.prompt.visibility === 'public' ? '<span class="tag">Public</span> Every 2earl user can see this prompt. ' : share.shares.length ? `Private: only you and the ${String(share.shares.length)} ${share.shares.length === 1 ? 'person' : 'people'} you shared it with can see it. ` : 'Private: only you can see it. '}Changed ${esc(date(mode.prompt.updatedAt))}.${mode.prompt.copiedFrom ? ' Copied from a public prompt.' : ''}</p>`
+      ? `<p class="muted">${mode.prompt.visibility === 'public' ? '<span class="tag">Public</span> Every 2earl user can see this prompt. ' : share.shares.length ? `Private: only you and the ${String(share.shares.length)} ${share.shares.length === 1 ? 'person' : 'people'} you shared it with can see it. ` : 'Private: only you can see it. '}Changed ${esc(date(mode.prompt.updatedAt))}.${versionCount ? ` <a class="text-link" href="/prompts/${esc(mode.prompt.id)}/versions">${String(versionCount)} earlier ${versionCount === 1 ? 'version' : 'versions'}</a>.` : ''}${mode.prompt.copiedFrom ? ' Copied from a public prompt.' : ''}</p>`
       : '';
   const after =
     mode.kind === 'edit'
@@ -709,6 +719,40 @@ export function sharedList(prompts: PromptSummary[], query: string): string {
 <div class="search-row"><input id="q" name="q" type="search" value="${esc(query)}" maxlength="200"><button class="button button-quiet" type="submit">Search</button></div>
 </form>
 ${prompts.length ? `<ul class="list">${rows}</ul>` : `<p class="empty">${query ? 'No shared prompts match.' : 'Nothing shared with you yet.'}</p>`}`,
+    { signedIn: true },
+    '/prompts',
+  );
+}
+
+/**
+ * Earlier versions of a prompt, newest first. Each shows what restoring it would change, so the
+ * owner sees the difference without comparing two long texts by eye.
+ */
+export function promptVersionsPage(prompt: Prompt, versions: PromptVersion[]): string {
+  const items = versions
+    .map((v) => {
+      const changes = diffLines(prompt.body, v.body);
+      const meta = [
+        v.title !== prompt.title ? `title “${esc(v.title)}”` : '',
+        v.description !== prompt.description ? 'a different description' : '',
+        v.tags.join(',') !== prompt.tags.join(',') ? 'different tags' : '',
+        v.models.join(',') !== prompt.models.join(',') ? 'different models' : '',
+      ].filter(Boolean);
+      return `<li class="version">
+<h2>Saved ${esc(date(v.savedAt))}</h2>
+<p class="muted">Replaced ${esc(date(v.replacedAt))}${meta.length ? `. Also has ${meta.join(', ')}` : ''}.</p>
+${changes.length ? `<p>Restoring it changes the text like this:</p><pre class="prompt-body diff">${esc(changes.join('\n'))}</pre>` : v.body === prompt.body ? '<p>The text is the same as now.</p>' : '<p>The text is too long to compare line by line.</p>'}
+<details><summary>Show the whole text</summary><pre class="prompt-body">${esc(v.body)}</pre></details>
+<form method="post" action="/prompts/${esc(prompt.id)}/versions/${esc(v.id)}/restore"><button class="button button-quiet" type="submit">Restore this version</button></form>
+</li>`;
+    })
+    .join('');
+  return layout(
+    `Earlier versions: ${prompt.title}`,
+    `<p class="crumb"><a href="/prompts/${esc(prompt.id)}">${esc(prompt.title)}</a></p>
+<h1>Earlier versions</h1>
+<p class="muted">The newest ${String(PROMPT_LIMITS.versions)} are kept, only for you. Restoring one keeps the current text as a version too, so you can go back.${prompt.visibility === 'public' ? ' This prompt is public: a restored version is visible to everyone at once.' : ''}</p>
+${versions.length ? `<ol class="versions">${items}</ol>` : '<p>No earlier versions yet. One is kept each time you change the prompt.</p>'}`,
     { signedIn: true },
     '/prompts',
   );

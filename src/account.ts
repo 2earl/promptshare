@@ -24,6 +24,7 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
     db.prepare('DELETE FROM share_misses WHERE uid = ?').bind(uid),
     db.prepare('DELETE FROM share_locks WHERE uid = ?').bind(uid),
     db.prepare('DELETE FROM prompts WHERE owner_uid = ?').bind(uid),
+    db.prepare('DELETE FROM prompt_versions WHERE owner_uid = ?').bind(uid),
     db.prepare('DELETE FROM web_sessions WHERE uid = ?').bind(uid),
     db.prepare('DELETE FROM profiles WHERE uid = ?').bind(uid),
     db.prepare('DELETE FROM consents WHERE uid = ?').bind(uid),
@@ -42,6 +43,7 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
   const left = await db
     .prepare(
       `SELECT (SELECT COUNT(*) FROM prompts WHERE owner_uid = ?1)
+            + (SELECT COUNT(*) FROM prompt_versions WHERE owner_uid = ?1)
             + (SELECT COUNT(*) FROM shared_sessions WHERE owner_uid = ?1)
             + (SELECT COUNT(*) FROM session_members WHERE uid = ?1)
             + (SELECT COUNT(*) FROM session_entries WHERE author_uid = ?1 OR assignee_uid = ?1)
@@ -170,6 +172,26 @@ export async function exportUserData(
       category: row.category,
       text: row.body,
       sentAt: iso(row.created_at as number),
+    })),
+    // Earlier versions of your prompts (§4.3).
+    promptVersions: (
+      await db
+        .prepare(
+          `SELECT id, prompt_id, title, description, body, tags, models, saved_at, replaced_at
+           FROM prompt_versions WHERE owner_uid = ? ORDER BY prompt_id, replaced_at`,
+        )
+        .bind(uid)
+        .all()
+    ).results.map((row) => ({
+      prompt: row.prompt_id,
+      id: row.id,
+      title: row.title,
+      description: row.description,
+      body: row.body,
+      tags: JSON.parse(row.tags as string) as unknown,
+      models: JSON.parse(row.models as string) as unknown,
+      savedAt: iso(row.saved_at as number),
+      replacedAt: iso(row.replaced_at as number),
     })),
     // The addresses you shared your prompts with, and prompts others shared with you.
     promptShares: (
