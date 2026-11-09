@@ -1,5 +1,5 @@
 import { SESSION_LIMITS } from '../sessions';
-import { PROMPT_LIMITS, type Prompt, type PromptSummary } from '../prompts';
+import { PROMPT_LIMITS, type Prompt, type PromptSummary, type PromptVariable } from '../prompts';
 import { SHARE_LIMITS, type Share } from '../shares';
 import {
   ENTRY_KINDS,
@@ -121,7 +121,7 @@ export const TOOL_DOCS: { permission: string; tools: [string, string][] }[] = [
     permission: 'Read your prompts, prompts shared with you, and public prompts',
     tools: [
       ['search_prompts', 'Search by words; or list the newest'],
-      ['get_prompt', 'One prompt with its text'],
+      ['get_prompt', 'One prompt with its text; fills its {{variables}}'],
     ],
   },
   {
@@ -320,8 +320,9 @@ ${error ? `<p class="alert" role="alert">${esc(error)}</p>` : ''}
 <input id="title" name="title" required maxlength="${String(PROMPT_LIMITS.title)}" value="${esc(form.title)}">
 <label for="description">What it is for <span class="optional">optional</span></label>
 <input id="description" name="description" maxlength="${String(PROMPT_LIMITS.description)}" value="${esc(form.description)}">
-<label for="body">Prompt</label>
+<label for="body">Prompt <span class="optional">parts that change with each use can be variables: {{topic}}, or {{tone=friendly}} with a default</span></label>
 <textarea id="body" name="body" required rows="14" class="mono">${esc(form.body)}</textarea>
+${mode.kind === 'edit' && mode.prompt.variables.length ? `<p class="muted">${variablesLine(mode.prompt.variables)}</p>` : ''}
 <label for="tags">Tags <span class="optional">optional, separated by commas</span></label>
 <input id="tags" name="tags" value="${esc(form.tags)}">
 <label for="models">Written for <span class="optional">optional, e.g. Claude, GPT-5</span></label>
@@ -713,6 +714,18 @@ ${prompts.length ? `<ul class="list">${rows}</ul>` : `<p class="empty">${query ?
   );
 }
 
+/** "To fill in when you use it: topic, tone (default: friendly)." Assistants ask for these. */
+function variablesLine(variables: PromptVariable[]): string {
+  const list = variables
+    .map((v) =>
+      v.default
+        ? `<code>${esc(v.name)}</code> (default: ${esc(v.default)})`
+        : `<code>${esc(v.name)}</code>`,
+    )
+    .join(', ');
+  return `To fill in when you use it: ${list}. Your assistant asks for these, or takes them from the conversation.`;
+}
+
 export function publicPrompt(prompt: Prompt, origin: string): string {
   const shared = prompt.sharedWithYou && prompt.visibility === 'private';
   const by = prompt.author ? `@${esc(prompt.author)}` : 'a 2earl user';
@@ -723,6 +736,7 @@ export function publicPrompt(prompt: Prompt, origin: string): string {
 <p class="muted">${shared ? `Shared with you by ${by}` : prompt.author ? `By @${esc(prompt.author)}` : 'By a 2earl user'}${prompt.models.length ? ` · for ${esc(prompt.models.join(', '))}` : ''} · changed ${esc(date(prompt.updatedAt))}</p>
 ${prompt.description ? `<p>${esc(prompt.description)}</p>` : ''}
 <pre class="prompt-body">${esc(prompt.body)}</pre>
+${prompt.variables.length ? `<p class="muted">${variablesLine(prompt.variables)}</p>` : ''}
 <div class="actions">
 ${prompt.mine ? `<a class="button button-quiet" href="/prompts/${esc(prompt.id)}">Edit your prompt</a>` : `<form method="post" action="/p/${esc(prompt.id)}/copy"><button class="button" type="submit">Copy to my prompts</button></form>`}
 ${prompt.sharedWithYou ? `<form method="post" action="/p/${esc(prompt.id)}/dismiss"><button class="button button-quiet" type="submit">Remove from my list</button></form>` : ''}

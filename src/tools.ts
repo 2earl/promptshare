@@ -7,6 +7,7 @@ import {
   PromptError,
   copyPrompt,
   deletePrompt,
+  fillPrompt,
   getPrompt,
   savePrompt,
   searchPrompts,
@@ -64,11 +65,19 @@ export function untrusted(what: string, body: string): string {
   ].join('\n');
 }
 
-function promptResult(prompt: Prompt): Result {
+function promptResult(prompt: Prompt, fill?: { unfilled: string[]; unknown: string[] }): Result {
   const { body, ...meta } = prompt;
+  const info = fill
+    ? {
+        ...meta,
+        filled: true,
+        ...(fill.unfilled.length ? { unfilled: fill.unfilled } : {}),
+        ...(fill.unknown.length ? { notInThisPrompt: fill.unknown } : {}),
+      }
+    : meta;
   return {
     content: [
-      { type: 'text', text: JSON.stringify(meta, null, 2) },
+      { type: 'text', text: JSON.stringify(info, null, 2) },
       {
         type: 'text',
         text: prompt.mine
@@ -169,14 +178,26 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Get a prompt',
       description:
-        'Gets one prompt with its full text. A prompt written by another 2earl user (public, or shared with you) comes marked as theirs.',
-      inputSchema: z.object({ id }),
+        'Gets one prompt with its full text. A prompt written by another 2earl user (public, or shared with you) comes marked as theirs. `variables` lists its placeholders, written `{{name}}` or `{{name=default}}`. To use the prompt, pass `fill` with a value for each: from what the user already said, or ask them. Variables without a value keep their default; `unfilled` names the ones still open. Values are used for this answer only and not stored.',
+      inputSchema: z.object({
+        id,
+        fill: z
+          .record(z.string().max(40), z.string().max(8 * 1024))
+          .optional()
+          .describe('Values for the prompt’s variables, by name.'),
+      }),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    guarded(SCOPES.read, async ({ id }: { id: string }) => {
-      const prompt = await getPrompt(db, caller.uid, id);
-      return prompt ? promptResult(prompt) : fail('No prompt with that ID that you can see.');
-    }),
+    guarded(
+      SCOPES.read,
+      async ({ id, fill }: { id: string; fill?: Record<string, string> | undefined }) => {
+        const prompt = await getPrompt(db, caller.uid, id);
+        if (!prompt) return fail('No prompt with that ID that you can see.');
+        if (!fill) return promptResult(prompt);
+        const filled = fillPrompt(prompt.body, fill);
+        return promptResult({ ...prompt, body: filled.body }, filled);
+      },
+    ),
   );
 
   const fields = {
@@ -185,7 +206,9 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     body: z
       .string()
       .max(32 * 1024)
-      .describe('The prompt itself.'),
+      .describe(
+        'The prompt itself. Parts that change with each use can be variables: `{{topic}}`, or `{{tone=friendly}}` with a default.',
+      ),
     tags: z.array(z.string().max(40)).max(10).optional(),
     models: z
       .array(z.string().max(60))
@@ -395,14 +418,20 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Load a shared session',
       description:
-        'Reads a shared session, named by its ID or its exact title: first its brief (the current state: goal, decisions, open questions, next steps), then its entries, newest first, each with its kind, when it was written and by whom. The summary at the top says how current the brief is (`brief.entriesSince`: entries saved after it, which it may not reflect yet), lists open tasks, and shows what another member changed in the brief since the user last loaded the session. When work in this conversation changes where things stand, offer the user an updated brief (update_session_brief with `basedOn`); save only what they agree to. `since` returns only entries newer than an entry ID; `before` reads further back; `kind` keeps one kind of entry.',
+        'Reads a shared session, named by its ID or its exact title: first its brief (the current state: goal, decisions, open questions, next steps), then its entries, newest first, each with its kind, when it was written and by whom. The summary at the top says how current the brief is (`brief.entriesSince`: entries saved after it, which it may not reflect yet), lists open tasks, and shows what another member changed in the brief since the user last loaded the session. When work in this conversation changes where things stand, offer the user an updated brief (update_session_brief with `basedOn`); save only what they agree to. `since` returns only entries newer than an entry ID, or with `brief` only those saved after the current brief (resuming a long session: the brief plus what it doesn’t cover yet); `before` reads further back; `kind` keeps one kind of entry.',
       inputSchema: z.object({
         id: z
           .string()
           .min(1)
           .max(200)
           .describe('The session’s ID, or its exact title (case doesn’t matter).'),
-        since: z.string().max(64).optional().describe('Only entries newer than this entry ID.'),
+        since: z
+          .string()
+          .max(64)
+          .optional()
+          .describe(
+            'Only entries newer than this entry ID. `brief`: only entries saved after the current brief, which is the quickest way to resume a long session.',
+          ),
         before: z.string().max(64).optional().describe('Only entries older than this entry ID.'),
         kind: z.enum(ENTRY_KINDS).optional().describe('Only entries of this kind.'),
         status: z.enum(['open', 'done']).optional().describe('Only tasks that are open, or done.'),

@@ -289,10 +289,22 @@ async function anchorOf(db: D1Database, sessionId: string, entryId: string | und
   return row?.position ?? null;
 }
 
+/** Where the current brief sits, so "since the brief" reads what it may not reflect; 0 if none. */
+async function briefPosition(db: D1Database, sessionId: string): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT rowid AS position FROM session_entries
+       WHERE session_id = ? AND kind = 'brief' AND removed_at IS NULL ORDER BY rowid DESC LIMIT 1`,
+    )
+    .bind(sessionId)
+    .first<{ position: number }>();
+  return row?.position ?? 0;
+}
+
 export interface LoadOptions {
   /** Entries older than this entry. */
   before?: string | undefined;
-  /** Entries newer than this entry. */
+  /** Entries newer than this entry; `brief`: newer than the current brief (all, if none). */
   since?: string | undefined;
   kind?: EntryKind | undefined;
   /** Tasks that are open, or done. */
@@ -367,7 +379,10 @@ export async function loadSession(
   if (!member) return null;
 
   const before = await anchorOf(db, sessionId, options.before);
-  const since = await anchorOf(db, sessionId, options.since);
+  const since =
+    options.since === 'brief'
+      ? await briefPosition(db, sessionId)
+      : await anchorOf(db, sessionId, options.since);
   const { results } = await db
     .prepare(
       `SELECT ${ENTRY_COLUMNS}

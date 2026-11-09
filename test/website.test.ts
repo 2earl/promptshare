@@ -487,6 +487,7 @@ describe('publishing and public prompts', () => {
     expect(explore).toContain('@ada');
     const page = await (await get(`/p/${id}`, reader.cookie)).text();
     expect(page).toContain('Copy to my prompts');
+    expect(page).toContain('To fill in when you use it: <code>diff</code>');
     expect(page).toContain(`/report?url=${encodeURIComponent(`https://promptshare.cc/p/${id}`)}`);
     const copied = await post(`/p/${id}/copy`, {}, reader.cookie);
     expect(
