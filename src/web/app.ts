@@ -40,6 +40,7 @@ import {
   listInvitations,
   listMembers,
   listSessions,
+  BriefConflict,
   briefHistory,
   loadSession,
   renameSession,
@@ -468,7 +469,11 @@ export function createApp(now: () => number) {
   app.post('/sessions/:id/brief', async (c) => {
     const uid = requireUser(c);
     if (typeof uid !== 'string') return uid;
-    const body = text((await c.req.parseBody()).brief);
+    const form = await c.req.parseBody();
+    const body = text(form.brief);
+    // The version shown when the form was opened: saving over someone's newer brief is refused,
+    // and the page shows their version with the user's text still in the box.
+    const basedOn = typeof form.basedOn === 'string' ? form.basedOn.trim() || null : undefined;
     try {
       const brief = await updateBrief(
         c.env.DB,
@@ -477,12 +482,17 @@ export function createApp(now: () => number) {
         c.get('now'),
         c.req.param('id'),
         body,
+        basedOn,
       );
       if (!brief) return notFound(c, 'session');
       return c.redirect(`/sessions/${c.req.param('id')}`, 303);
     } catch (error) {
       if (!(error instanceof SessionError)) throw error;
-      return showSession(c, uid, error.message, undefined, null, body);
+      const message =
+        error instanceof BriefConflict
+          ? `Not saved: the brief was changed${error.by} while you were editing. That version is shown above and your text is still in the box. Combine the two and save again.`
+          : error.message;
+      return showSession(c, uid, message, undefined, null, body);
     }
   });
 

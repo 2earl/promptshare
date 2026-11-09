@@ -232,6 +232,27 @@ Kept as they are:
 - **Inviting, roles and leaving stay on the website (D7).** An assistant that reads others'
   entries must not be able to add members.
 
+### 5.2 Staying current (phase S4)
+
+Found by using a session the way assistants do: loading "Core" an hour after its brief was
+written. The brief no longer matched what had happened since, nothing in the load said so, and a
+second assistant updating it would have replaced the first one's version without either knowing.
+
+| Problem | Change |
+|---|---|
+| "Load my Core session" took two calls: list, then load by ID | `load_session` also takes the exact title (case ignored). Several sessions with that title: the tool names their IDs instead of picking one |
+| Nothing says whether the brief is out of date | The load summary has `brief`: its version, when and by whom it was written, and `entriesSince`, the entries saved after it. When that is above 0, a `note` asks the assistant to offer the user an updated brief. The tool description asks the same when work in the conversation changes where things stand. Only an offer: nothing is saved unless the user agrees (directory policy on stored conversation content) |
+| Open items are kept twice, as prose in the brief and as tasks, and drift apart | The summary lists open tasks (up to 20): the label, or the first line of a task up to 2 KB. Longer unlabelled tasks aren't decrypted, for the CPU budget |
+| Coming back to a session whose brief someone else rewrote means rereading 16 KB | `briefChangedSinceYourLastLoad`: lines removed and added since the version current at the user's last load, at most 40, for a brief another member wrote. Briefs over 400 lines aren't compared |
+| Two writers of the brief silently overwrite each other | `update_session_brief` takes `basedOn`, the version that was read (empty: there was none). The check and the insert are one SQL statement, so two writers can't both pass. Without `basedOn` it saves as before. The website's form always sends it, and on a conflict shows the newer version with the user's text still in the box |
+| An entry doesn't say which assistant wrote it | The user's own entries say "written by you with claude.ai" (the client ID's host, or "on promptshare.cc"). Other members' entries don't: which assistant someone uses is theirs to tell. The client ID was already stored (§7); nothing new is stored |
+
+Considered and not done:
+- **Summaries written by a model on the server.** A new processor of session content, cost, and
+  CPU; the assistant reading the session can summarise it.
+- **Search across all sessions.** Still blocked by per-session encryption (§7.1).
+- **Linking entries to pull requests or other outside state.** A new integration and data flow.
+
 ## 6. MCP tools (through the gateway)
 
 Gateway service entry: `{ id: 'promptshare', name: 'Prompt share', binding: 'PROMPTSHARE',
@@ -248,9 +269,9 @@ trust: 'first-party' }`. Tools appear to assistants as `promptshare__<tool>`.
 | `copy_prompt` | Copy a public or shared prompt into your own | `write` |
 | `list_sessions` | Sessions you own or belong to | `mcp:promptshare.state` |
 | `create_session` | A new session, owned by you | `state` |
-| `load_session` | Read a session's brief and entries (`since`, `before`, `kind`) | `state` |
+| `load_session` | Read a session's brief and entries (`since`, `before`, `kind`), by ID or exact title; the summary says how current the brief is, lists open tasks and what another member changed in the brief (§5.2) | `state` |
 | `save_to_session` | Add an entry of a kind, optionally as a reply | `state` |
-| `update_session_brief` | Replace the session's brief; earlier versions stay | `state` |
+| `update_session_brief` | Replace the session's brief; earlier versions stay. With `basedOn`, refused if the brief changed since it was read (§5.2) | `state` |
 | `rename_session` | Rename a session you own | `state` |
 | `update_task` | Mark a task open or done, or assign it to a member | `state` |
 | `search_session` | Find entries holding all given words in one session | `state` |
@@ -392,6 +413,7 @@ login's "Download your data" includes it.
 | S1 | Sharing a private prompt with people by email (§4.1): login's `PromptshareDirectory`, `prompt_shares`, "Shared with you" on the website and through assistants; privacy policy | Built |
 | S2 | Sessions: brief with history, `since` and new-entry counts, entry kinds, replies, renaming, starting from a prompt (§5.1) | Built |
 | S3 | Sessions: search within a session, tasks with status and assignee, Markdown export (§5.1) | Built |
+| S4 | Sessions: load by title, brief freshness, open tasks and brief changes on load, brief updates that can't overwrite a newer version (§5.2) | Built |
 | P3 | MCP prompts primitive through the gateway; prompt versions | |
 
 Public prompts can't exist before C2, because publishing is a website action. So nothing public
