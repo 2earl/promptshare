@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { deleteUserData, exportUserData } from '../src/account';
 import { acceptInvitation } from '../src/sessions';
 import { safeReturnTo } from '../src/web/http';
-import { moderationCleanup } from '../src/moderation';
+import { getMessage, moderationCleanup } from '../src/moderation';
+import { remindOwner, sendDecision, sendReceipt } from '../src/notices';
 import { mimeMessage, notifyOwner } from '../src/web/messages';
 import { addMember, count, resetDatabase } from './helpers';
 
@@ -13,8 +14,8 @@ const SAME_ORIGIN = { Origin: ORIGIN, 'Sec-Fetch-Site': 'same-origin' };
 beforeEach(async () => {
   await resetDatabase();
   await env.DB.batch(
-    ['signin_tx', 'web_sessions', 'messages', 'moderation_decisions'].map((t) =>
-      env.DB.prepare(`DELETE FROM ${t}`),
+    ['signin_tx', 'web_sessions', 'messages', 'moderation_decisions', 'consents', 'settings'].map(
+      (t) => env.DB.prepare(`DELETE FROM ${t}`),
     ),
   );
 });
@@ -125,7 +126,8 @@ describe('signing in with 2earl', () => {
   it('signs in, goes back where the user was, and stores only a hash of the cookie', async () => {
     const { done, cookie } = await signIn('user-1', '/sessions');
     expect(done.status).toBe(302);
-    expect(done.headers.get('Location')).toBe('/sessions');
+    // Asked once about sensitive data, then back where the user was going.
+    expect(done.headers.get('Location')).toBe('/consent?return=%2Fsessions');
     expect(done.headers.getSetCookie().join()).toContain('HttpOnly; SameSite=Lax');
     expect(cookie).toMatch(/^__Host-session=/);
     const value = cookie.split('=')[1] ?? '';
@@ -810,5 +812,186 @@ describe('moderation', () => {
     await deleteUserData(env.DB, 'user-2', 10);
     expect(await count('moderation_decisions')).toBe(1);
     expect(await count('moderation_decisions', "affected_uid = 'user-2'")).toBe(0);
+  });
+});
+
+// ---- Consent, reminders, reporter emails ---------------------------------------------------------
+
+describe('explicit consent for sensitive data', () => {
+  it('asks once after sign-in, records either answer, and can be withdrawn', async () => {
+    const first = await signIn('user-1', '/sessions');
+    expect(first.done.headers.get('Location')).toBe('/consent?return=%2Fsessions');
+    const page = await (await get('/consent?return=%2Fsessions', first.cookie)).text();
+    expect(page).toContain('I explicitly consent');
+    const yes = await post('/consent?return=%2Fsessions', { decision: 'yes' }, first.cookie);
+    expect(yes.headers.get('Location')).toBe('/sessions');
+    expect(await count('consents', "uid = 'user-1' AND consented = 1 AND version = 1")).toBe(1);
+
+    // Not asked again.
+    expect((await signIn('user-1', '/sessions')).done.headers.get('Location')).toBe('/sessions');
+    expect(await (await get('/account', first.cookie)).text()).toContain('Withdraw consent');
+
+    await post('/consent', { decision: 'no' }, first.cookie);
+    expect(await count('consents', "uid = 'user-1' AND consented = 0")).toBe(1);
+    // "No" is an answer too: not asked again.
+    expect((await signIn('user-1', '/sessions')).done.headers.get('Location')).toBe('/sessions');
+    expect((await post('/consent', { decision: 'maybe' }, first.cookie)).status).toBe(400);
+  });
+
+  it('notes the question to assistants until it is answered', async () => {
+    const { connect, tool } = await import('./helpers');
+    const client = await connect('user-1');
+    const before = await tool(client, 'save_prompt', { title: 'T', body: 'B' });
+    expect(before.texts.at(-1)).toContain('https://promptshare.cc/consent');
+    await env.DB.prepare("INSERT INTO consents VALUES ('user-1', 'sensitive_data', 0, 1, 1)").run();
+    const after = await tool(client, 'save_prompt', { title: 'T2', body: 'B' });
+    expect(after.texts.join()).not.toContain('/consent');
+  });
+
+  it('is deleted with the account', async () => {
+    await env.DB.prepare("INSERT INTO consents VALUES ('user-1', 'sensitive_data', 1, 1, 1)").run();
+    await deleteUserData(env.DB, 'user-1', 10);
+    expect(await count('consents')).toBe(0);
+  });
+});
+
+describe('reminders for unanswered messages', () => {
+  it('reminds the owner once, 30 minutes after a message arrives, until it is closed', async () => {
+    const sent: unknown[] = [];
+    const mailEnv = Object.create(env) as Env & { CONTACT_TO?: string };
+    Object.defineProperty(mailEnv, 'CONTACT_TO', { value: 'owner@example.com' });
+    Object.defineProperty(mailEnv, 'MAILER', {
+      value: { send: (m: unknown) => (sent.push(m), Promise.resolve({ messageId: 'x' })) },
+    });
+    const now = 100_000;
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO messages (id, kind, body, created_at) VALUES ('old', 'contact', 'a', ?)",
+      ).bind(now - 1801),
+      env.DB.prepare(
+        "INSERT INTO messages (id, kind, body, created_at) VALUES ('new', 'contact', 'b', ?)",
+      ).bind(now - 60),
+      env.DB.prepare(
+        "INSERT INTO messages (id, kind, body, created_at, closed_at) VALUES ('done', 'report', 'c', ?, ?)",
+      ).bind(now - 5000, now - 4000),
+    ]);
+    expect(await remindOwner(mailEnv, now)).toBe(1);
+    expect(await remindOwner(mailEnv, now + 600)).toBe(0); // reminded once
+    expect(sent).toHaveLength(1);
+    expect(await count('messages', "id = 'old' AND reminded_at IS NOT NULL")).toBe(1);
+    expect(await count('messages', "id = 'new' AND reminded_at IS NULL")).toBe(1);
+  });
+});
+
+describe('emailing reporters (switch on the moderation page)', () => {
+  const ownerCookie = async () => (await signIn('owner-uid!aal2')).cookie;
+  const report = {
+    contentUrl: 'https://promptshare.cc/p/00000000-0000-4000-8000-000000000000',
+    category: 'terms',
+    body: 'Spam.',
+    name: 'Rita',
+    email: 'rita@example.com',
+    goodFaith: 'yes',
+  };
+
+  it('is off by default: no automatic email, and the owner gets the prepared one', async () => {
+    const page = await (await post('/report', report)).text();
+    expect(page).not.toContain('We also emailed you');
+    expect(await count('messages', 'receipt_sent_at IS NOT NULL')).toBe(0);
+  });
+
+  it('is switched only by the owner, and then confirms receipt automatically', async () => {
+    expect(
+      (
+        await post(
+          '/admin/settings',
+          { emailReporters: 'on' },
+          (await signIn('user-2!aal2')).cookie,
+        )
+      ).status,
+    ).toBe(404);
+    const owner = await ownerCookie();
+    await post('/admin/settings', { emailReporters: 'on' }, owner);
+    expect(await count('settings', "key = 'email_reporters' AND value = 'on'")).toBe(1);
+    expect(await (await get('/admin', owner)).text()).toMatch(
+      /name="emailReporters" value="on" checked/,
+    );
+
+    const page = await (await post('/report', report)).text();
+    expect(page).toContain('We also emailed you this confirmation.');
+
+    await post('/admin/settings', {}, owner);
+    expect(await count('settings', "key = 'email_reporters' AND value = 'off'")).toBe(1);
+  });
+
+  it('shows the owner whether the paid sending path works', async () => {
+    const owner = await ownerCookie();
+    const result = await (
+      await post('/admin/settings/test', { to: 'someone@example.com' }, owner)
+    ).text();
+    // In tests the binding is local: either outcome is reported, never an error page.
+    expect(result).toMatch(/Sent to someone@example\.com|Not sent \(/);
+  });
+});
+
+describe('the decision email to a reporter', () => {
+  it('goes to the reporter from noreply@promptshare.cc, replies to legal@, and is recorded', async () => {
+    const sent: { to: string; from: { email: string }; replyTo: string; text: string }[] = [];
+    const mailEnv = Object.create(env) as Env;
+    Object.defineProperty(mailEnv, 'MAILER', {
+      value: {
+        send: (m: (typeof sent)[number]) => (sent.push(m), Promise.resolve({ messageId: 'x' })),
+      },
+    });
+    await env.DB.prepare(
+      "INSERT INTO messages (id, kind, name, email, content_url, body, created_at) VALUES ('r', 'report', 'Rita', 'rita@example.com', 'https://promptshare.cc/p/x', 'b', 1)",
+    ).run();
+    const message = await getMessage(env.DB, 'r');
+    const decision = {
+      id: 'd',
+      createdAt: 2,
+      contentType: 'prompt' as const,
+      contentId: 'x',
+      sessionId: null,
+      action: 'remove' as const,
+      ground: 'terms' as const,
+      law: null,
+      explanation: 'Spam is against the terms.',
+      untilAt: null,
+      contentTitle: 'T',
+      reportBased: true,
+    };
+    expect(message && (await sendDecision(mailEnv, 5, message, decision))).toBe(true);
+    expect(sent[0]).toMatchObject({
+      to: 'rita@example.com',
+      from: { email: 'noreply@promptshare.cc' },
+      replyTo: 'legal@2earl.com',
+    });
+    expect(sent[0]?.text).toContain('Spam is against the terms.');
+    expect(sent[0]?.text).toContain('not by automated means');
+    expect(await count('messages', "id = 'r' AND decision_sent_at = 5")).toBe(1);
+  });
+});
+
+describe('receipt emails', () => {
+  it('sends at most 3 a day to one address, so the form can’t be used to mail a stranger', async () => {
+    const sent: unknown[] = [];
+    const mailEnv = Object.create(env) as Env;
+    Object.defineProperty(mailEnv, 'MAILER', {
+      value: { send: (m: unknown) => (sent.push(m), Promise.resolve({ messageId: 'x' })) },
+    });
+    for (let i = 0; i < 5; i++) {
+      await env.DB.prepare(
+        "INSERT INTO messages (id, kind, email, body, created_at) VALUES (?, 'report', 'victim@example.com', 'b', 1)",
+      )
+        .bind(`m${String(i)}`)
+        .run();
+      await sendReceipt(mailEnv, 1000 + i, `m${String(i)}`, {
+        name: '',
+        email: 'victim@example.com',
+        contentUrl: 'https://promptshare.cc/p/x',
+      });
+    }
+    expect(sent).toHaveLength(3);
   });
 });

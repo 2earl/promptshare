@@ -41,6 +41,8 @@ export interface Message {
   notifiedAt: number | null;
   decisionId: string | null;
   closedAt: number | null;
+  receiptSentAt: number | null;
+  decisionSentAt: number | null;
 }
 
 interface MessageRow {
@@ -57,6 +59,8 @@ interface MessageRow {
   notified_at: number | null;
   decision_id: string | null;
   closed_at: number | null;
+  receipt_sent_at: number | null;
+  decision_sent_at: number | null;
 }
 
 const toMessage = (row: MessageRow): Message => ({
@@ -73,6 +77,8 @@ const toMessage = (row: MessageRow): Message => ({
   notifiedAt: row.notified_at,
   decisionId: row.decision_id,
   closedAt: row.closed_at,
+  receiptSentAt: row.receipt_sent_at,
+  decisionSentAt: row.decision_sent_at,
 });
 
 export async function listMessages(db: D1Database, open: boolean): Promise<Message[]> {

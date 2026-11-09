@@ -1,7 +1,9 @@
 import { SESSION_LIMITS } from '../sessions';
 import { PROMPT_LIMITS, type Prompt, type PromptSummary } from '../prompts';
 import type { Entry, Invitation, Member, SessionSummary } from '../sessions';
+import { SENSITIVE_CONSENT_TEXT, type ConsentDecision } from '../consent';
 import { ACTIONS, type Decision, type Message, type ReportedContent } from '../moderation';
+import { decisionText } from '../notices';
 import { CATEGORIES, MESSAGE_LIMITS, type Errors } from './messages';
 
 /**
@@ -469,13 +471,19 @@ ${prompt.description ? `<p>${esc(prompt.description)}</p>` : ''}
 
 // ---- Account, contact, report -----------------------------------------------------------------
 
-export function accountPage(handle: string | null, decisions: Decision[] = []): string {
+export function accountPage(
+  handle: string | null,
+  decisions: Decision[] = [],
+  consent: ConsentDecision | null = null,
+): string {
   return layout(
     'Account',
     `<h1>Account</h1>
 <p>You are signed in with your 2earl account.</p>
 <h2>Handle</h2>
 <p>${handle ? `Others see you as <strong>@${esc(handle)}</strong>. <a href="/welcome">Change it</a>` : 'You haven’t chosen a handle. You need one to make prompts public or share sessions. <a href="/welcome">Choose a handle</a>'}</p>
+<h2>Sensitive information</h2>
+<p>${consent?.consented ? 'You consented to Prompt share storing sensitive information you save.' : 'You haven’t consented to Prompt share storing sensitive information, such as health details.'} <a href="/consent">${consent?.consented ? 'Withdraw consent' : 'Review'}</a></p>
 <h2>Your data</h2>
 <p>Download everything Prompt share holds about you, or delete your account, from <a href="https://login.2earl.com/account">your 2earl account</a>. Deleting it deletes your prompts, your sessions and your entries in other people’s sessions.</p>
 ${decisionsList(decisions)}
@@ -568,11 +576,12 @@ export function thanks(
   kind: 'contact' | 'report',
   id: string,
   withEmail: boolean,
+  receiptEmailed = false,
 ): string {
   const title = kind === 'report' ? 'Report received' : 'Message sent';
   const next =
     kind === 'report'
-      ? `A person will review it${withEmail ? ' and email you the decision' : ''}. Reference: ${id}.`
+      ? `A person will review it${withEmail ? ' and email you the decision' : ''}. Reference: ${id}.${receiptEmailed ? ' We also emailed you this confirmation.' : ''}`
       : `We’ll answer by email. Reference: ${id}.`;
   return layout(
     title,
@@ -590,7 +599,14 @@ const categoryLabel = (category: string): string =>
 
 const KIND_LABEL = { contact: 'Message', report: 'Report', appeal: 'Contest' } as const;
 
-export function adminList(messages: Message[], open: boolean): string {
+export function adminList(
+  messages: Message[],
+  open: boolean,
+  settings: { emailReporters: boolean; testResult: string | null } = {
+    emailReporters: false,
+    testResult: null,
+  },
+): string {
   const rows = messages
     .map(
       (
@@ -604,8 +620,43 @@ export function adminList(messages: Message[], open: boolean): string {
     `<h1>Moderation</h1>
 <p class="lede">Reports, contests and messages, ${open ? 'oldest first. Reports need a decision without undue delay' : 'most recent first'}.</p>
 <p class="actions">${open ? '<a class="text-link" href="/admin?closed=1">Closed</a>' : '<a class="text-link" href="/admin">Open</a>'}</p>
-${messages.length ? `<ul class="list">${rows}</ul>` : `<p class="empty">${open ? 'Nothing open.' : 'Nothing closed yet.'}</p>`}`,
+${messages.length ? `<ul class="list">${rows}</ul>` : `<p class="empty">${open ? 'Nothing open.' : 'Nothing closed yet.'}</p>`}
+<section class="members" aria-labelledby="settings-title">
+<h2 id="settings-title">Settings</h2>
+<form class="form" method="post" action="/admin/settings">
+<label class="choice"><input type="checkbox" name="emailReporters" value="on"${settings.emailReporters ? ' checked' : ''}> Email reporters a confirmation of receipt and the decision, from noreply@promptshare.cc</label>
+<p class="hint">Needs the Cloudflare Workers Paid plan and promptshare.cc onboarded in Email Service → Email Sending. Off: you send the decision yourself from the report’s page.</p>
+<p><button class="button button-quiet" type="submit">Save settings</button></p>
+</form>
+<form class="inline-form" method="post" action="/admin/settings/test">
+<label for="testTo">Send a test email</label>
+<div class="search-row"><input id="testTo" name="to" type="email" required placeholder="an address that isn’t yours, to test sending to anyone"><button class="button button-quiet" type="submit">Send test</button></div>
+</form>
+${settings.testResult ? `<p class="${settings.testResult.startsWith('Sent') ? 'muted' : 'alert'}" role="status">${esc(settings.testResult)}</p>` : ''}
+</section>`,
     { signedIn: true },
+  );
+}
+
+export function consentPage(decision: ConsentDecision | null, returnTo: string | null): string {
+  const action = `/consent${returnTo ? `?return=${encodeURIComponent(returnTo)}` : ''}`;
+  return layout(
+    'Sensitive information',
+    `<h1>Sensitive information</h1>
+<p>Some people keep notes about their health, beliefs or similar private matters in their prompts or sessions. The law protects this kind of information specially, so Prompt share stores it only with your explicit consent.</p>
+<div class="preview"><p>${esc(SENSITIVE_CONSENT_TEXT)}</p></div>
+<p class="muted">Your answer doesn’t change anything else: you can use Prompt share either way. Without consent, please don’t save such information. ${
+      decision
+        ? `You last answered on ${esc(when(decision.decidedAt))}: ${decision.consented ? 'you consented' : 'you didn’t consent'}.`
+        : ''
+    }</p>
+<div class="actions">
+<form method="post" action="${esc(action)}"><input type="hidden" name="decision" value="yes"><button class="button" type="submit">I consent</button></form>
+<form method="post" action="${esc(action)}"><input type="hidden" name="decision" value="no"><button class="button button-quiet" type="submit">${decision?.consented ? 'Withdraw consent' : 'I don’t consent'}</button></form>
+</div>
+<p class="muted">If you withdraw consent, Prompt share can’t find such information for you: delete the prompts and entries that hold it, or your whole account at <a href="https://login.2earl.com/account">login.2earl.com</a>.</p>`,
+    { signedIn: true },
+    '/account',
   );
 }
 
@@ -630,23 +681,13 @@ function contentBlock(content: ReportedContent | null): string {
 <pre class="prompt-body">${esc(content.text)}</pre></div>`;
 }
 
-/** Art. 16(5): the reporter is told the decision. Sent by the owner from their own mailbox. */
-function reporterMailto(message: Message, decision: Decision): string {
-  if (!message.email) return '';
-  const body = [
-    `Hello${message.name ? ` ${message.name}` : ''},`,
-    '',
-    `thank you for your report of ${message.contentUrl ?? 'content on Prompt share'} (reference ${message.id}).`,
-    '',
-    `Our decision: ${ACTIONS[decision.action]}.`,
-    decision.explanation,
-    '',
-    'The decision was made by a person, not by automated means. If you disagree, reply to this email.',
-    'You can also turn to an out-of-court dispute settlement body or a court.',
-    '',
-    'Prompt share (2earl)',
-  ].join('\n');
-  const href = `mailto:${encodeURIComponent(message.email)}?subject=${encodeURIComponent('Your report to Prompt share')}&body=${encodeURIComponent(body)}`;
+/** Art. 16(5): the reporter is told the decision, automatically or by the owner's own email. */
+function reporterNotice(message: Message, decision: Decision): string {
+  if (!message.email) return '<p class="muted">The reporter gave no email address.</p>';
+  if (message.decisionSentAt) {
+    return `<p class="muted">The decision was emailed to the reporter automatically, ${esc(when(message.decisionSentAt))}.</p>`;
+  }
+  const href = `mailto:${encodeURIComponent(message.email)}?subject=${encodeURIComponent('Our decision on your report')}&body=${encodeURIComponent(decisionText(message, decision))}`;
   return `<p><a class="button button-quiet" href="${esc(href)}">Email the reporter the decision</a> <span class="muted">Required by the DSA (Art. 16(5)); opens your mail app.</span></p>`;
 }
 
@@ -666,6 +707,7 @@ ${message.contentUrl ? `<dt>Content</dt><dd><code>${esc(message.contentUrl)}</co
 ${message.category ? `<dt>Reason</dt><dd>${esc(categoryLabel(message.category))}</dd>` : ''}
 ${message.kind === 'report' ? `<dt>Good faith</dt><dd>${message.goodFaith ? 'Confirmed' : 'Not confirmed'}</dd>` : ''}
 <dt>Emailed to you</dt><dd>${message.notifiedAt ? 'Yes' : 'No'}</dd>
+${message.kind === 'report' && message.email ? `<dt>Receipt to reporter</dt><dd>${message.receiptSentAt ? 'Emailed automatically' : 'Not emailed'}</dd>` : ''}
 </dl>`;
   const options = (Object.keys(ACTIONS) as (keyof typeof ACTIONS)[])
     .filter((a) => (message.kind === 'appeal' ? true : a !== 'reverse'))
@@ -706,7 +748,7 @@ ${details}
 ${contested ? `<h2>The decision contested</h2><p><strong>${esc(ACTIONS[contested.action])}</strong> · ${esc(when(contested.createdAt))}</p><pre class="prompt-body">${esc(contested.explanation)}</pre>` : ''}
 ${message.kind !== 'contact' ? `<h2>The content</h2>${contentBlock(content)}` : ''}
 ${form.action === 'threat' || decision?.action === 'threat' ? THREAT_PROCEDURE : ''}
-${decision ? `<h2>Decision</h2><p><strong>${esc(ACTIONS[decision.action])}</strong> · ${esc(when(decision.createdAt))}</p><pre class="prompt-body">${esc(decision.explanation)}</pre>${message.kind === 'report' ? reporterMailto(message, decision) : ''}` : ''}
+${decision ? `<h2>Decision</h2><p><strong>${esc(ACTIONS[decision.action])}</strong> · ${esc(when(decision.createdAt))}</p><pre class="prompt-body">${esc(decision.explanation)}</pre>${message.kind === 'report' ? reporterNotice(message, decision) : ''}` : ''}
 ${decideForm}
 <div class="danger-zone">${closeForm}</div>`,
     { signedIn: true },

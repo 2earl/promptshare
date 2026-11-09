@@ -1,4 +1,7 @@
 import { Hono } from 'hono';
+import { needsAsking, recordSensitiveConsent, sensitiveConsent } from '../consent';
+import { sendDecision, sendReceipt } from '../notices';
+import { SETTINGS, isOn, setSwitch } from '../settings';
 import {
   ModerationError,
   closeMessage,
@@ -173,7 +176,12 @@ export function createApp(now: () => number) {
       if (previous) await endWebSession(c.env, previous);
       const cookieValue = await createWebSession(c.env, c.get('now'), uid, aal2At);
       setCookie(c, SESSION_COOKIE, cookieValue, SESSION_ABSOLUTE_SECONDS);
-      return c.redirect(safeReturnTo(returnTo) ?? '/prompts', 302);
+      const next = safeReturnTo(returnTo) ?? '/prompts';
+      // Asked once (and again if the wording changes): explicit consent for sensitive data.
+      if (needsAsking(await sensitiveConsent(c.env.DB, uid))) {
+        return c.redirect(`/consent?return=${encodeURIComponent(next)}`, 302);
+      }
+      return c.redirect(next, 302);
     } catch (error) {
       if (!(error instanceof SignInError)) throw error;
       console.error('sign-in failed', error.message);
@@ -197,7 +205,11 @@ export function createApp(now: () => number) {
     if (typeof uid !== 'string') return uid;
     return html(
       c,
-      pages.accountPage(await handleOf(c.env.DB, uid), await decisionsAbout(c.env.DB, uid)),
+      pages.accountPage(
+        await handleOf(c.env.DB, uid),
+        await decisionsAbout(c.env.DB, uid),
+        await sensitiveConsent(c.env.DB, uid),
+      ),
     );
   });
 
@@ -733,7 +745,13 @@ export function createApp(now: () => number) {
     const owner = requireOwner(c);
     if (owner !== true) return owner;
     const open = c.req.query('closed') !== '1';
-    return html(c, pages.adminList(await listMessages(c.env.DB, open), open));
+    return html(
+      c,
+      pages.adminList(await listMessages(c.env.DB, open), open, {
+        emailReporters: await isOn(c.env.DB, SETTINGS.emailReporters),
+        testResult: null,
+      }),
+    );
   });
 
   app.get('/admin/messages/:id', async (c) => {
@@ -766,7 +784,7 @@ export function createApp(now: () => number) {
           message.contentUrl,
         );
     try {
-      await decide(c.env.DB, c.get('now'), {
+      const decisionId = await decide(c.env.DB, c.get('now'), {
         messageId: id,
         content,
         action: form.action as Action,
@@ -775,6 +793,14 @@ export function createApp(now: () => number) {
         explanation: form.explanation,
         suspendDays: Number.parseInt(form.suspendDays, 10),
       });
+      const decision = await decisionById(c.env.DB, decisionId);
+      if (
+        decision &&
+        message.kind === 'report' &&
+        (await isOn(c.env.DB, SETTINGS.emailReporters))
+      ) {
+        await sendDecision(c.env, c.get('now'), message, decision);
+      }
       return c.redirect(`/admin/messages/${id}`, 303);
     } catch (error) {
       if (!(error instanceof ModerationError)) throw error;
@@ -782,11 +808,67 @@ export function createApp(now: () => number) {
     }
   });
 
+  app.post('/admin/settings', async (c) => {
+    const owner = requireOwner(c);
+    if (owner !== true) return owner;
+    const on = (await c.req.parseBody()).emailReporters === 'on';
+    await setSwitch(c.env.DB, SETTINGS.emailReporters, on, c.get('now'));
+    return c.redirect('/admin', 303);
+  });
+
+  /** Tries the paid sending path: whether Workers Paid and the sending domain are set up. */
+  app.post('/admin/settings/test', async (c) => {
+    const owner = requireOwner(c);
+    if (owner !== true) return owner;
+    const to = text((await c.req.parseBody()).to).trim();
+    let result: string;
+    try {
+      await c.env.MAILER.send({
+        to,
+        from: { email: 'noreply@promptshare.cc', name: 'Prompt share' },
+        replyTo: 'legal@2earl.com',
+        subject: 'Prompt share: test email',
+        text: 'This is a test from the Prompt share moderation settings. Sending to any address works.',
+      });
+      result = `Sent to ${to}. Sending to any address works.`;
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      result = `Not sent (${typeof code === 'string' ? code : error instanceof Error ? error.message : 'unknown'}). Check the Workers Paid plan and promptshare.cc in Email Sending.`;
+    }
+    return html(
+      c,
+      pages.adminList(await listMessages(c.env.DB, true), true, {
+        emailReporters: await isOn(c.env.DB, SETTINGS.emailReporters),
+        testResult: result,
+      }),
+    );
+  });
+
   app.post('/admin/messages/:id/close', async (c) => {
     const owner = requireOwner(c);
     if (owner !== true) return owner;
     await closeMessage(c.env.DB, c.get('now'), c.req.param('id'));
     return c.redirect('/admin', 303);
+  });
+
+  // ---- Explicit consent for sensitive data (GDPR Art. 9(2)(a)) ------------------------------
+
+  app.get('/consent', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    return html(
+      c,
+      pages.consentPage(await sensitiveConsent(c.env.DB, uid), safeReturnTo(c.req.query('return'))),
+    );
+  });
+
+  app.post('/consent', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const decision = (await c.req.parseBody()).decision;
+    if (decision !== 'yes' && decision !== 'no') return html(c, pages.consentPage(null, null), 400);
+    await recordSensitiveConsent(c.env.DB, uid, c.get('now'), decision === 'yes');
+    return c.redirect(safeReturnTo(c.req.query('return')) ?? '/account', 303);
   });
 
   // ---- Contact and reports ------------------------------------------------------------------
@@ -862,7 +944,9 @@ export function createApp(now: () => number) {
       ...input,
     });
     c.executionCtx.waitUntil(notifyOwner(c.env, c.get('now'), id, { kind: 'report', ...input }));
-    return html(c, pages.thanks(viewer(c), 'report', id, input.email !== ''));
+    const receipt = input.email !== '' && (await isOn(c.env.DB, SETTINGS.emailReporters));
+    if (receipt) c.executionCtx.waitUntil(sendReceipt(c.env, c.get('now'), id, input));
+    return html(c, pages.thanks(viewer(c), 'report', id, input.email !== '', receipt));
   });
 
   // ---- Static files and everything else ------------------------------------------------------

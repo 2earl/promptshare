@@ -47,6 +47,7 @@ assistant path is the gateway's
 | CSRF on website forms | Every POST must carry Origin `https://promptshare.cc` (and same-origin `Sec-Fetch-Site`); SameSite=Lax | Tests: cross-site and missing Origin refused |
 | Open redirect after sign-in | Only same-site paths (`/…`, not `//` or `\`) | Test |
 | Header injection in the owner's notification email | Control characters stripped from headers; Reply-To only for a valid address; subject encoded | Test |
+| The report form used to email a stranger (receipt to an address the reporter typed) | Receipts only when the owner turned them on; fixed text; at most 3 per address a day | Test |
 | Spam through the contact and report forms | Per-network rate limit (10 a minute); length limits; reports stored and read by a person, never acted on automatically | Tests |
 | Supply chain | Exact versions, release delay, Dependabot, CodeQL, lockfile | CI |
 

@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { audit } from './audit';
+import { needsAsking, sensitiveConsent } from './consent';
 import { SCOPES, allows, type Caller, type Scope } from './caller';
 import {
   PromptError,
@@ -74,6 +75,10 @@ function entryText(entry: Entry): string {
 const id = z.string().min(1).max(64).describe('The ID, as returned by another tool.');
 const STATE_META = { '2earl/scope': SCOPES.state };
 
+/** Shown with saves until the user has answered the sensitive-data question on the website. */
+const CONSENT_NOTE =
+  'Note for the user: Prompt share stores health information and other sensitive personal data only with explicit consent, given once at https://promptshare.cc/consent.';
+
 export function buildServer(env: Env, caller: Caller, now: () => number): McpServer {
   const server = new McpServer(SERVER_INFO);
   const db = env.DB;
@@ -95,6 +100,11 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
         return fail('Prompt share couldn’t complete this request. Try again later.');
       }
     };
+  /** Adds the consent note while the user hasn't answered the question on the website. */
+  const withConsentNote = async (result: Result): Promise<Result> =>
+    needsAsking(await sensitiveConsent(db, caller.uid))
+      ? { ...result, content: [...result.content, { type: 'text', text: CONSENT_NOTE }] }
+      : result;
   const log = (event: Parameters<typeof audit>[2], detail: Record<string, unknown>) =>
     audit(db, now(), event, { actorUserId: caller.uid, clientId: caller.clientId, detail });
 
@@ -176,7 +186,7 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
       }) => {
         const prompt = await savePrompt(db, caller.uid, now(), args);
         await log('prompt.created', { prompt: prompt.id });
-        return promptResult(prompt);
+        return withConsentNote(promptResult(prompt));
       },
     ),
   );
@@ -378,7 +388,7 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
           const entry = await saveToSession(db, secret, caller, now(), id, body, label);
           if (!entry) return fail('No shared session with that ID that you belong to.');
           await log('session.entry_added', { session: id, entry: entry.id });
-          return json({ saved: entry.id, createdAt: entry.createdAt });
+          return await withConsentNote(json({ saved: entry.id, createdAt: entry.createdAt }));
         } catch (error) {
           if (
             error instanceof SessionError &&
