@@ -52,9 +52,15 @@ export async function count(table: string, where = '1 = 1', ...params: unknown[]
 
 export async function resetDatabase(): Promise<void> {
   await env.DB.batch(
-    ['session_entries', 'session_members', 'shared_sessions', 'prompts', 'audit_events'].map((t) =>
-      env.DB.prepare(`DELETE FROM ${t}`),
-    ),
+    [
+      'invitations',
+      'session_entries',
+      'session_members',
+      'shared_sessions',
+      'prompts',
+      'profiles',
+      'audit_events',
+    ].map((t) => env.DB.prepare(`DELETE FROM ${t}`)),
   );
 }
 

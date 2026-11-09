@@ -1,6 +1,7 @@
 import { env, exports } from 'cloudflare:workers';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { deleteUserData, exportUserData } from '../src/account';
+import { acceptInvitation } from '../src/sessions';
 import { safeReturnTo } from '../src/web/http';
 import { mimeMessage, notifyOwner } from '../src/web/messages';
 import { addMember, count, resetDatabase } from './helpers';
@@ -275,7 +276,7 @@ describe('shared sessions on the website', () => {
     await addMember(id, 'user-2', 'editor');
     const member = await signIn('user-2');
     await post(`${path}/entries`, { text: 'from the member' }, member.cookie);
-    expect(await (await get(path, owner.cookie)).text()).toContain('Another member');
+    expect(await (await get(path, owner.cookie)).text()).toContain('a member without a handle');
 
     const refused = await post(`${path}/entries`, { text: 'AKIAIOSFODNN7EXAMPLE' }, owner.cookie);
     expect(refused.status).toBe(400);
@@ -406,5 +407,196 @@ describe('account deletion covers the website', () => {
     expect(await count('messages', "uid = 'user-1'")).toBe(0);
     expect(await count('messages')).toBe(1);
     expect((await get('/prompts', cookie)).status).toBe(302);
+  });
+});
+
+// ---- Phase C2: handles, publishing, invitations ------------------------------------------------
+
+async function withHandle(uid: string, handle: string) {
+  const session = await signIn(uid);
+  const saved = await post('/welcome', { handle }, session.cookie);
+  expect(saved.status).toBe(303);
+  return session.cookie;
+}
+
+describe('handles', () => {
+  it('validates, reserves and keeps handles unique regardless of case', async () => {
+    const { cookie } = await signIn('user-1');
+    expect(await (await post('/welcome', { handle: 'A' }, cookie)).text()).toContain('Use 3 to 30');
+    expect(await (await post('/welcome', { handle: 'support' }, cookie)).text()).toContain(
+      'reserved',
+    );
+    expect(await (await post('/welcome', { handle: 'my-2earl-team' }, cookie)).text()).toContain(
+      'reserved',
+    );
+    expect((await post('/welcome', { handle: '@Ada' }, cookie)).status).toBe(303);
+    expect(await (await get('/account', cookie)).text()).toContain('@ada');
+
+    const other = await signIn('user-2');
+    expect(await (await post('/welcome', { handle: 'ADA' }, other.cookie)).text()).toContain(
+      'taken',
+    );
+  });
+});
+
+describe('publishing and public prompts', () => {
+  it('asks for a handle, previews, publishes; others find, read and copy it', async () => {
+    const { cookie } = await signIn('user-1');
+    const path =
+      (
+        await post(
+          '/prompts',
+          { title: 'Release notes', body: 'Write release notes for {{diff}}' },
+          cookie,
+        )
+      ).headers.get('Location') ?? '';
+    const id = path.split('/').at(-1) ?? '';
+    expect((await get(`${path}/publish`, cookie)).headers.get('Location')).toBe(
+      `/welcome?return=${encodeURIComponent(`${path}/publish`)}`,
+    );
+    // Not public without a handle, even when posted directly.
+    expect((await post(`${path}/publish`, {}, cookie)).status).toBe(400);
+
+    await post('/welcome', { handle: 'ada' }, cookie);
+    const preview = await (await get(`${path}/publish`, cookie)).text();
+    expect(preview).toContain('Write release notes for {{diff}}');
+    expect(preview).toContain('@ada');
+    expect((await post(`${path}/publish`, {}, cookie)).headers.get('Location')).toBe(`/p/${id}`);
+
+    const reader = await signIn('user-2');
+    const explore = await (await get('/explore?q=release', reader.cookie)).text();
+    expect(explore).toContain('Release notes');
+    expect(explore).toContain('@ada');
+    const page = await (await get(`/p/${id}`, reader.cookie)).text();
+    expect(page).toContain('Copy to my prompts');
+    expect(page).toContain(`/report?url=${encodeURIComponent(`https://promptshare.cc/p/${id}`)}`);
+    const copied = await post(`/p/${id}/copy`, {}, reader.cookie);
+    expect(
+      await count(
+        'prompts',
+        "owner_uid = 'user-2' AND copied_from = ? AND visibility = 'private'",
+        id,
+      ),
+    ).toBe(1);
+    expect(copied.status).toBe(303);
+    // The reader can't change or publish the original.
+    expect((await post(`/prompts/${id}/publish`, {}, reader.cookie)).status).toBe(404);
+    expect((await post(`/prompts/${id}`, { title: 'x', body: 'y' }, reader.cookie)).status).toBe(
+      404,
+    );
+
+    // Private again: gone for others at once.
+    await post(`${path}/unpublish`, {}, cookie);
+    expect((await get(`/p/${id}`, reader.cookie)).status).toBe(404);
+  });
+
+  it('never publishes a prompt moderation restricted', async () => {
+    const cookie = await withHandle('user-1', 'ada');
+    const path =
+      (await post('/prompts', { title: 'T', body: 'B' }, cookie)).headers.get('Location') ?? '';
+    await env.DB.prepare("UPDATE prompts SET status = 'restricted'").run();
+    const response = await post(`${path}/publish`, {}, cookie);
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain('restricted by moderation');
+    expect(await count('prompts', "visibility = 'public'")).toBe(0);
+  });
+});
+
+describe('invitations and members', () => {
+  async function sessionWithLink(role: 'editor' | 'viewer' = 'editor') {
+    const owner = await withHandle('user-1', 'owner-one');
+    const path =
+      (await post('/sessions', { title: 'Team notes' }, owner)).headers.get('Location') ?? '';
+    const page = await (await post(`${path}/invitations`, { role }, owner)).text();
+    const link = /https:\/\/promptshare\.cc\/join\/([A-Za-z0-9_-]+)/.exec(page);
+    expect(link).not.toBeNull();
+    return { owner, path, sessionId: path.split('/').at(-1) ?? '', token: link?.[1] ?? '' };
+  }
+
+  it('stores only a hash of the link, and joins once by a signed-in person with a handle', async () => {
+    const { owner, path, token } = await sessionWithLink();
+    expect(await count('invitations', 'token_hash = ?', token)).toBe(0);
+
+    expect((await get(`/join/${token}`)).headers.get('Location')).toBe(
+      `/signin?return=${encodeURIComponent(`/join/${token}`)}`,
+    );
+    const guest = await signIn('user-2');
+    expect((await get(`/join/${token}`, guest.cookie)).headers.get('Location')).toBe(
+      `/welcome?return=${encodeURIComponent(`/join/${token}`)}`,
+    );
+    await post('/welcome', { handle: 'guest' }, guest.cookie);
+    const join = await (await get(`/join/${token}`, guest.cookie)).text();
+    expect(join).toContain('Join “Team notes”?');
+    expect(join).toContain('@owner-one');
+    // Joining is a form post: an assistant following a link can't join.
+    expect(await count('session_members', "uid = 'user-2'")).toBe(0);
+    expect((await post(`/join/${token}`, {}, guest.cookie)).headers.get('Location')).toBe(path);
+
+    await post(`${path}/entries`, { text: 'from the guest' }, guest.cookie);
+    expect(await (await get(path, owner)).text()).toContain('@guest');
+
+    // Used up.
+    const third = await withHandle('user-3', 'third');
+    expect((await get(`/join/${token}`, third)).status).toBe(404);
+    expect((await post(`/join/${token}`, {}, third)).status).toBe(404);
+    expect(await count('session_members', "uid = 'user-3'")).toBe(0);
+  });
+
+  it('lets the owner revoke links and remove people, and members leave', async () => {
+    const { owner, path, sessionId, token } = await sessionWithLink('viewer');
+    const invitation = await env.DB.prepare('SELECT id FROM invitations').first<{ id: string }>();
+    await post(`${path}/invitations/${invitation?.id ?? ''}/revoke`, {}, owner);
+    const guest = await withHandle('user-2', 'guest');
+    expect((await post(`/join/${token}`, {}, guest)).status).toBe(404);
+
+    await addMember(sessionId, 'user-2', 'viewer');
+    // A viewer can't add entries, invite, or remove others.
+    expect((await post(`${path}/entries`, { text: 'x' }, guest)).status).toBe(400);
+    expect((await post(`${path}/invitations`, { role: 'editor' }, guest)).status).toBe(404);
+    expect((await post(`${path}/members/user-1/remove`, {}, guest)).status).toBe(404);
+
+    await post(`${path}/members/user-2/remove`, {}, owner);
+    expect(await count('session_members', "uid = 'user-2'")).toBe(0);
+    await addMember(sessionId, 'user-2', 'editor');
+    expect((await post(`${path}/leave`, {}, guest)).headers.get('Location')).toBe('/sessions');
+    expect(await count('session_members', "uid = 'user-2'")).toBe(0);
+    // The owner can't leave their own session.
+    expect((await post(`${path}/leave`, {}, owner)).status).toBe(404);
+  });
+
+  it('lets only one of two simultaneous joins use a link', async () => {
+    const { sessionId, token } = await sessionWithLink();
+    const [a, b] = await Promise.all([
+      acceptInvitation(env.DB, env.SESSION_PEPPER, 'user-2', 100, token),
+      acceptInvitation(env.DB, env.SESSION_PEPPER, 'user-3', 100, token),
+    ]);
+    expect([a, b].filter((x) => x === sessionId)).toHaveLength(1);
+    expect(await count('session_members', "uid IN ('user-2', 'user-3')")).toBe(1);
+  });
+
+  it('doesn’t let one member remove another', async () => {
+    const { path, sessionId } = await sessionWithLink();
+    await addMember(sessionId, 'user-2', 'editor');
+    await addMember(sessionId, 'user-3', 'editor');
+    const two = await withHandle('user-2', 'two');
+    expect((await post(`${path}/members/user-3/remove`, {}, two)).status).toBe(404);
+    expect(await count('session_members', "uid = 'user-3'")).toBe(1);
+  });
+
+  it('refuses expired links and caps members, counting open links', async () => {
+    const { owner, path, sessionId, token } = await sessionWithLink();
+    await env.DB.prepare('UPDATE invitations SET expires_at = 1').run();
+    expect((await get(`/join/${token}`, await withHandle('user-2', 'guest'))).status).toBe(404);
+
+    for (let i = 0; i < 19; i++) await addMember(sessionId, `member-${String(i)}`, 'viewer');
+    const full = await post(`${path}/invitations`, { role: 'viewer' }, owner);
+    expect(await full.text()).toContain('20 members');
+  });
+
+  it('deletes the user’s handle and links with the account', async () => {
+    await sessionWithLink();
+    await deleteUserData(env.DB, 'user-1', 10);
+    expect(await count('profiles')).toBe(0);
+    expect(await count('invitations')).toBe(0);
   });
 });

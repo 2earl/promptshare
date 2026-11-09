@@ -31,6 +31,7 @@ assistant path is the gateway's
 | Forged `X-2earl-*` headers on public routes | Only `GatewayMcp` reads them; the website's `fetch` never does | Test: headers on `fetch` are ignored |
 | Database read through a leaked Cloudflare API token | Session entries encrypted with a key held only as a Worker secret (DESIGN §7.1) | Test: rows hold no plaintext |
 | Accidental publication | Private by default; publishing only on the website after a preview; unpublish at once | Browser test |
+| Handle impersonation (`admin`, `promptshare`, `2earl…`) | Reserved handles; unique regardless of case | Test |
 | Joining a session without an invitation | Single-use, hashed, 7-day links; joining needs a signed-in person pressing **Join** (CSRF-protected); the owner sees and removes members | Tests |
 | An invitation link leaks | Single use; the owner sees who joined and can remove them and revoke unused links | Tests |
 | User enumeration | No directory or search of users; handles appear only on public prompts | Review |

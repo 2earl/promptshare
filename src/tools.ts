@@ -66,9 +66,9 @@ function promptResult(prompt: Prompt): Result {
 
 function entryText(entry: Entry): string {
   const head = `[${entry.createdAt}${entry.label ? ` · ${entry.label}` : ''} · id ${entry.id}]`;
-  return entry.mine
-    ? `${head} written by you\n${entry.text}`
-    : `${head}\n${untrusted('ENTRY BY ANOTHER MEMBER', entry.text)}`;
+  if (entry.mine) return `${head} written by you\n${entry.text}`;
+  const by = entry.author ? `@${entry.author}` : 'another member';
+  return `${head} written by ${by}\n${untrusted('ENTRY BY ANOTHER MEMBER', entry.text)}`;
 }
 
 const id = z.string().min(1).max(64).describe('The ID, as returned by another tool.');

@@ -1,6 +1,6 @@
 import { SESSION_LIMITS } from '../sessions';
 import { PROMPT_LIMITS, type Prompt, type PromptSummary } from '../prompts';
-import type { Entry, SessionSummary } from '../sessions';
+import type { Entry, Invitation, Member, SessionSummary } from '../sessions';
 import { CATEGORIES, MESSAGE_LIMITS, type Errors } from './messages';
 
 /**
@@ -35,7 +35,7 @@ export function layout(title: string, main: string, viewer: Viewer, current = ''
   const nav = (href: string, label: string) =>
     `<a href="${href}"${current === href ? ' aria-current="page"' : ''}>${label}</a>`;
   const account = viewer.signedIn
-    ? `${nav('/prompts', 'Prompts')}${nav('/sessions', 'Sessions')}${nav('/account', 'Account')}`
+    ? `${nav('/explore', 'Explore')}${nav('/prompts', 'Prompts')}${nav('/sessions', 'Sessions')}${nav('/account', 'Account')}`
     : `<a class="button button-small" href="/signin">Sign in</a>`;
   return `<!doctype html>
 <html lang="en">
@@ -199,6 +199,8 @@ export function promptEditor(
     mode.kind === 'edit'
       ? `<div class="danger-zone">
 ${mode.prompt.visibility === 'public' ? `<form method="post" action="/prompts/${esc(mode.prompt.id)}/unpublish"><button class="button button-quiet" type="submit">Make private</button></form>` : ''}
+${mode.prompt.visibility === 'private' && mode.prompt.status === 'active' ? `<a class="button button-quiet" href="/prompts/${esc(mode.prompt.id)}/publish">Make public…</a>` : ''}
+${mode.prompt.visibility === 'public' ? `<a class="text-link" href="/p/${esc(mode.prompt.id)}">See it as others do</a>` : ''}
 <a class="text-link danger" href="/prompts/${esc(mode.prompt.id)}/delete">Delete prompt</a>
 </div>`
       : '';
@@ -258,7 +260,7 @@ export function sessionList(sessions: SessionSummary[], error: string | null): s
   return layout(
     'Shared sessions',
     `<h1>Shared sessions</h1>
-<p class="lede">A shared session keeps where a conversation stands, so you can continue in another chat or another assistant. Only you can see your sessions; inviting people comes soon.</p>
+<p class="lede">A shared session keeps where a conversation stands, so you can continue in another chat, another assistant, or with people you invite.</p>
 ${error ? `<p class="alert" role="alert">${esc(error)}</p>` : ''}
 <form class="inline-form" method="post" action="/sessions">
 <label for="title">New session</label>
@@ -270,15 +272,28 @@ ${sessions.length ? `<ul class="list">${rows}</ul>` : '<p class="empty">No sessi
   );
 }
 
+export interface SessionPage {
+  id: string;
+  title: string;
+  role: string;
+  entries: Entry[];
+  more: boolean;
+  members: Member[];
+  invitations: Invitation[] | null;
+}
+
+const who = (handle: string | null) => (handle ? `@${esc(handle)}` : 'a member without a handle');
+
 export function sessionView(
-  session: { id: string; title: string; role: string; entries: Entry[]; more: boolean },
+  session: SessionPage,
   error: string | null,
   draft: { text: string; label: string },
+  newLink: string | null = null,
 ): string {
   const entries = session.entries
     .map(
       (e) => `<article class="entry${e.mine ? '' : ' entry-other'}" id="entry-${esc(e.id)}">
-<header><span>${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : 'Another member'} · ${esc(date(e.createdAt))}</span>
+<header><span>${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : who(e.author)} · ${esc(date(e.createdAt))}</span>
 ${e.mine || session.role === 'owner' ? `<form method="post" action="/sessions/${esc(session.id)}/entries/${esc(e.id)}/delete"><button class="link-button danger" type="submit">Delete</button></form>` : ''}</header>
 <pre>${esc(e.text)}</pre>
 </article>`,
@@ -286,6 +301,41 @@ ${e.mine || session.role === 'owner' ? `<form method="post" action="/sessions/${
     .join('');
   const last = session.entries.at(-1);
   const canWrite = session.role !== 'viewer';
+  const owner = session.role === 'owner';
+  const roleName = (role: string) =>
+    role === 'owner' ? 'owner' : role === 'editor' ? 'can add entries' : 'can read';
+  const members = session.members
+    .map(
+      (m) =>
+        `<li><span>${m.you ? 'You' : who(m.handle)} · ${roleName(m.role)}</span>${
+          owner && !m.you
+            ? `<form method="post" action="/sessions/${esc(session.id)}/members/${esc(m.uid)}/remove"><button class="link-button danger" type="submit">Remove</button></form>`
+            : ''
+        }</li>`,
+    )
+    .join('');
+  const invitations = (session.invitations ?? [])
+    .map(
+      (
+        i,
+      ) => `<li><span>Link for someone who ${i.role === 'editor' ? 'can add entries' : 'can read'} · valid until ${esc(date(i.expiresAt))}</span>
+<form method="post" action="/sessions/${esc(session.id)}/invitations/${esc(i.id)}/revoke"><button class="link-button danger" type="submit">Revoke</button></form></li>`,
+    )
+    .join('');
+  const sharing = `<section class="members" aria-labelledby="members-title">
+<h2 id="members-title">People</h2>
+<ul class="people">${members}</ul>
+${
+  owner
+    ? `${newLink ? `<div class="slip"><p class="slip-label">New invitation link · works once, for 7 days</p><p class="slip-address"><code>${esc(newLink)}</code></p></div><p class="muted">Send it to one person you trust. Everything in this session will be visible to them, and what they write reaches your assistant.</p>` : ''}
+<form class="inline-form" method="post" action="/sessions/${esc(session.id)}/invitations">
+<label for="role">Invite someone</label>
+<div class="search-row"><select id="role" name="role"><option value="editor">They can add entries</option><option value="viewer">They can only read</option></select><button class="button button-quiet" type="submit">Create link</button></div>
+</form>
+${invitations ? `<ul class="people">${invitations}</ul>` : ''}`
+    : `<form method="post" action="/sessions/${esc(session.id)}/leave"><button class="button button-quiet" type="submit">Leave session</button></form>`
+}
+</section>`;
   return layout(
     session.title,
     `<p class="crumb"><a href="/sessions">Shared sessions</a></p>
@@ -304,19 +354,126 @@ ${
 }
 ${entries || '<p class="empty">No entries yet. Ask your assistant to save where your conversation stands, or add one above.</p>'}
 ${session.more && last ? `<p><a href="/sessions/${esc(session.id)}?before=${esc(last.id)}">Older entries</a></p>` : ''}
-${session.role === 'owner' ? `<div class="danger-zone"><a class="text-link danger" href="/sessions/${esc(session.id)}/delete">Delete session</a></div>` : ''}`,
+${sharing}
+${owner ? `<div class="danger-zone"><a class="text-link danger" href="/sessions/${esc(session.id)}/delete">Delete session</a></div>` : ''}`,
     { signedIn: true },
     '/sessions',
   );
 }
 
+export function joinPage(
+  invitation: {
+    title: string;
+    owner: string | null;
+    role: 'editor' | 'viewer';
+    alreadyMember: boolean;
+  },
+  token: string,
+): string {
+  return layout(
+    'Join a shared session',
+    `<h1>Join “${esc(invitation.title)}”?</h1>
+<p>${who(invitation.owner)} invited you to their shared session. You ${invitation.role === 'editor' ? 'can read it and add entries' : 'can read it'}.</p>
+<p class="muted">Only join sessions of people you trust. What they write there reaches your assistant when it loads the session.</p>
+${
+  invitation.alreadyMember
+    ? '<p>You are already a member.</p>'
+    : `<form method="post" action="/join/${esc(token)}" class="actions"><button class="button" type="submit">Join</button><a class="text-link" href="/sessions">Not now</a></form>`
+}`,
+    { signedIn: true },
+  );
+}
+
+export function handlePage(
+  current: string | null,
+  value: string,
+  error: string | null,
+  returnTo: string | null,
+): string {
+  return layout(
+    'Your handle',
+    `<h1>${current ? 'Change your handle' : 'Choose a handle'}</h1>
+<p>Your handle is the only thing other 2earl users see of you: as the author of your public prompts, and in shared sessions. It isn’t your name or email.</p>
+${error ? `<p class="alert" role="alert">${esc(error)}</p>` : ''}
+<form class="form" method="post" action="/welcome${returnTo ? `?return=${encodeURIComponent(returnTo)}` : ''}">
+<label for="handle">Handle <span class="optional">3–30 lowercase letters, digits or hyphens</span></label>
+<input id="handle" name="handle" required maxlength="30" value="${esc(value)}" autocomplete="username" pattern="[a-z0-9-]{3,30}">
+<p><button class="button" type="submit">Save handle</button></p>
+</form>`,
+    { signedIn: true },
+    '/account',
+  );
+}
+
+export function explore(prompts: PromptSummary[], query: string): string {
+  const rows = prompts
+    .map(
+      (p) => `<li><a href="/p/${esc(p.id)}"><span class="item-title">${esc(p.title)}</span>
+<span class="item-meta">${p.author ? `@${esc(p.author)}` : ''}${p.description ? ' · ' + esc(p.description) : ''}${p.models.length ? ' · for ' + esc(p.models.join(', ')) : ''}</span></a></li>`,
+    )
+    .join('');
+  return layout(
+    'Explore public prompts',
+    `<h1>Public prompts</h1>
+<p class="lede">Prompts other 2earl users chose to share. Copy one into your own prompts to use or change it.</p>
+<form class="search" method="get" action="/explore" role="search">
+<label for="q">Search public prompts</label>
+<div class="search-row"><input id="q" name="q" type="search" value="${esc(query)}" maxlength="200"><button class="button button-quiet" type="submit">Search</button></div>
+</form>
+${prompts.length ? `<ul class="list">${rows}</ul>` : `<p class="empty">${query ? 'No public prompts match.' : 'No public prompts yet.'}</p>`}`,
+    { signedIn: true },
+    '/explore',
+  );
+}
+
+export function publicPrompt(prompt: Prompt, origin: string): string {
+  return layout(
+    prompt.title,
+    `<p class="crumb"><a href="/explore">Public prompts</a></p>
+<h1>${esc(prompt.title)}</h1>
+<p class="muted">${prompt.author ? `By @${esc(prompt.author)}` : 'By a 2earl user'}${prompt.models.length ? ` · for ${esc(prompt.models.join(', '))}` : ''} · changed ${esc(date(prompt.updatedAt))}</p>
+${prompt.description ? `<p>${esc(prompt.description)}</p>` : ''}
+<pre class="prompt-body">${esc(prompt.body)}</pre>
+<div class="actions">
+${prompt.mine ? `<a class="button button-quiet" href="/prompts/${esc(prompt.id)}">Edit your prompt</a>` : `<form method="post" action="/p/${esc(prompt.id)}/copy"><button class="button" type="submit">Copy to my prompts</button></form>`}
+<a class="text-link" href="/report?url=${encodeURIComponent(`${origin}/p/${prompt.id}`)}">Report</a>
+</div>`,
+    { signedIn: true },
+    '/explore',
+  );
+}
+
+export function publishPreview(prompt: Prompt, handle: string): string {
+  return layout(
+    'Make public',
+    `<p class="crumb"><a href="/prompts/${esc(prompt.id)}">${esc(prompt.title)}</a></p>
+<h1>Make this prompt public?</h1>
+<p>Every signed-in 2earl user will be able to find, read and copy it, shown exactly like this, with your handle <strong>@${esc(handle)}</strong>. Copies people make stay theirs, even if you make it private again later.</p>
+<div class="preview">
+<h2>${esc(prompt.title)}</h2>
+<p class="muted">By @${esc(handle)}${prompt.models.length ? ` · for ${esc(prompt.models.join(', '))}` : ''}</p>
+${prompt.description ? `<p>${esc(prompt.description)}</p>` : ''}
+<pre class="prompt-body">${esc(prompt.body)}</pre>
+</div>
+<p class="muted">Check it holds nothing private: names, keys, internal details. Public prompts must follow the <a href="https://2earl.com/terms">terms of use</a>.</p>
+<form method="post" action="/prompts/${esc(prompt.id)}/publish" class="actions">
+<button class="button" type="submit">Make public</button>
+<a class="text-link" href="/prompts/${esc(prompt.id)}">Keep it private</a>
+</form>`,
+    { signedIn: true },
+    '/prompts',
+  );
+}
+
 // ---- Account, contact, report -----------------------------------------------------------------
 
-export function accountPage(): string {
+export function accountPage(handle: string | null): string {
   return layout(
     'Account',
     `<h1>Account</h1>
 <p>You are signed in with your 2earl account.</p>
+<h2>Handle</h2>
+<p>${handle ? `Others see you as <strong>@${esc(handle)}</strong>. <a href="/welcome">Change it</a>` : 'You haven’t chosen a handle. You need one to make prompts public or share sessions. <a href="/welcome">Choose a handle</a>'}</p>
 <h2>Your data</h2>
 <p>Download everything Prompt share holds about you, or delete your account, from <a href="https://login.2earl.com/account">your 2earl account</a>. Deleting it deletes your prompts, your sessions and your entries in other people’s sessions.</p>
 <form method="post" action="/signout"><button class="button button-quiet" type="submit">Sign out</button></form>`,

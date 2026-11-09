@@ -38,6 +38,8 @@ interface PromptRow {
   created_at: number;
   updated_at: number;
   published_at: number | null;
+  /** The owner's handle, if they chose one (profiles). */
+  author: string | null;
 }
 
 export interface Prompt {
@@ -51,6 +53,8 @@ export interface Prompt {
   visibility: 'private' | 'public';
   status: 'active' | 'restricted' | 'removed';
   copiedFrom: string | null;
+  /** The owner's handle: what other users see as the author. */
+  author: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -64,7 +68,11 @@ export class PromptError extends Error {
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
 
 /** Visible to `uid`: their own, or public and active. */
-const VISIBLE = `(owner_uid = ?1 OR (visibility = 'public' AND status = 'active'))`;
+const VISIBLE = `(p.owner_uid = ?1 OR (p.visibility = 'public' AND p.status = 'active'))`;
+
+/** Every prompt query: the prompt and its author's handle. */
+const SELECT =
+  'SELECT p.*, pr.handle AS author FROM prompts p LEFT JOIN profiles pr ON pr.uid = p.owner_uid';
 
 function toPrompt(row: PromptRow, uid: string): Prompt {
   return {
@@ -78,6 +86,7 @@ function toPrompt(row: PromptRow, uid: string): Prompt {
     visibility: row.visibility,
     status: row.status,
     copiedFrom: row.copied_from,
+    author: row.author,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -139,15 +148,16 @@ export async function searchPrompts(
   options: { query?: string | undefined; scope: 'mine' | 'public' | 'all' },
 ): Promise<PromptSummary[]> {
   const where = [VISIBLE];
-  if (options.scope === 'mine') where.push('owner_uid = ?1');
-  if (options.scope === 'public') where.push(`visibility = 'public' AND status = 'active'`);
+  if (options.scope === 'mine') where.push('p.owner_uid = ?1');
+  if (options.scope === 'public') where.push(`p.visibility = 'public' AND p.status = 'active'`);
   const match = options.query ? ftsQuery(options.query) : null;
   const sql = match
-    ? `SELECT p.* FROM prompts_fts f JOIN prompts p ON p.rowid = f.rowid
+    ? `SELECT p.*, pr.handle AS author FROM prompts_fts f JOIN prompts p ON p.rowid = f.rowid
+       LEFT JOIN profiles pr ON pr.uid = p.owner_uid
        WHERE prompts_fts MATCH ?2 AND ${where.join(' AND ')}
        ORDER BY bm25(prompts_fts), p.updated_at DESC LIMIT ${String(PROMPT_LIMITS.searchResults)}`
-    : `SELECT * FROM prompts WHERE ${where.join(' AND ')}
-       ORDER BY updated_at DESC LIMIT ${String(PROMPT_LIMITS.searchResults)}`;
+    : `${SELECT} WHERE ${where.join(' AND ')}
+       ORDER BY p.updated_at DESC LIMIT ${String(PROMPT_LIMITS.searchResults)}`;
   const statement = db.prepare(sql);
   const { results } = await (
     match ? statement.bind(uid, match) : statement.bind(uid)
@@ -157,7 +167,7 @@ export async function searchPrompts(
 
 export async function getPrompt(db: D1Database, uid: string, id: string): Promise<Prompt | null> {
   const row = await db
-    .prepare(`SELECT * FROM prompts WHERE id = ?2 AND ${VISIBLE}`)
+    .prepare(`${SELECT} WHERE p.id = ?2 AND ${VISIBLE}`)
     .bind(uid, id)
     .first<PromptRow>();
   return row ? toPrompt(row, uid) : null;
@@ -278,4 +288,35 @@ export async function copyPrompt(
   const source = await getPrompt(db, uid, id);
   if (!source) return null;
   return savePrompt(db, uid, now, source, source.id);
+}
+
+export class PublishError extends PromptError {
+  override name = 'PublishError';
+}
+
+/**
+ * Makes one of the caller's prompts visible to every signed-in 2earl user. Only from the website,
+ * after a preview (DESIGN D7); never offered to assistants. Needs a handle, an active prompt, and
+ * publishing not suspended by moderation.
+ */
+export async function publishPrompt(
+  db: D1Database,
+  uid: string,
+  now: number,
+  id: string,
+): Promise<Prompt | null> {
+  const prompt = await getPrompt(db, uid, id);
+  if (!prompt?.mine) return null;
+  if (!prompt.author) throw new PublishError('Choose a handle first: it is shown as the author.');
+  if (prompt.status !== 'active') {
+    throw new PublishError('This prompt was restricted by moderation and can’t be made public.');
+  }
+  await db
+    .prepare(
+      `UPDATE prompts SET visibility = 'public', published_at = ?, updated_at = ?
+       WHERE id = ? AND owner_uid = ? AND status = 'active'`,
+    )
+    .bind(now, now, id, uid)
+    .run();
+  return getPrompt(db, uid, id);
 }
