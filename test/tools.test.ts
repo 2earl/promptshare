@@ -34,7 +34,12 @@ describe('entry points', () => {
     const response = await exports.default.fetch(
       new Request('https://promptshare.cc/mcp', {
         method: 'POST',
-        headers: { ...gatewayHeaders('user-1', ALL), 'Content-Type': 'application/json' },
+        // Same-origin, so it gets past the website's form check: only routing decides.
+        headers: {
+          ...gatewayHeaders('user-1', ALL),
+          'Content-Type': 'application/json',
+          Origin: 'https://promptshare.cc',
+        },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
       }),
     );

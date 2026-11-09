@@ -85,7 +85,7 @@ Drafts are written in phase P2 and reviewed before launch.
 |---|---|---|
 | 1 | Contact address for DSA Art. 11 and 12 | **Done:** `legal@2earl.com` (Cloudflare Email Routing to the owner's mailbox). It goes on promptshare.cc's contact page in phase P2 |
 | 2 | Imprint | **Exists** at `2earl.com/imprint`. Its scope covers "every other 2earl service that links to it", so promptshare.cc links to it from every page |
-| 3 | Imprint gap: a second fast contact channel besides email | **Decided** by the owner: a contact form, not a phone number. Built in phase P2 and linked from the 2earl imprint. An electronic form answered quickly is generally accepted as the alternative to a phone number, but this is not settled beyond doubt |
+| 3 | Imprint gap: a second fast contact channel besides email | **Decided** by the owner: a contact form, not a phone number. Built in phase C1 at `promptshare.cc/contact`, emailed to the owner; to be linked from the 2earl imprint. An electronic form answered quickly is generally accepted as the alternative to a phone number, but this is not settled beyond doubt |
 | 4 | Review of this list and the §5 texts | **Decided** by the owner, 2026-11-09: no lawyer is available; Claude reviews them before phase P2 launches. That review checks the texts against the sources and this list; it is not legal advice, and the owner carries the legal risk |
 | 5 | Cloudflare data processing agreement | **Open:** confirm it applies to the account (it is part of Cloudflare's self-serve terms) |
 | 6 | Records of processing (GDPR Art. 30) | **Open:** a short document for login, the gateway and Prompt share, written with phase P2 |

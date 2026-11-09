@@ -60,11 +60,24 @@ jobs:
           # Uploaded with `wrangler secret bulk` before the commands below run.
           secrets: |
             STATE_ENCRYPTION_KEY
+            SESSION_PEPPER
+            CONTACT_TO
           command: |
             d1 migrations apply DB --remote
             deploy
         env:
           STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
+          SESSION_PEPPER: ${{ secrets.SESSION_PEPPER }}
+          CONTACT_TO: ${{ secrets.CONTACT_TO }}
 
-      # No smoke test in phase P1: the Worker has no public route, only Service Bindings. Once the
-      # gateway binds to it, its tool list shows Prompt share's tools.
+      # Ten minutes, so the first deployment can attach the custom domain meanwhile (infra/).
+      - name: Smoke test
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 10 https://promptshare.cc/oauth/client.json | grep -q '"client_name":"Prompt share"'; then
+              echo "healthy"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::https://promptshare.cc did not become healthy"
+          exit 1

@@ -5,8 +5,8 @@
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["global_fetch_strictly_public"],
 
-  // Phase P1 has no public route at all: only the gateway (GatewayMcp) and login (AccountEvents)
-  // reach this Worker, over Service Bindings. promptshare.cc is attached in phase P2.
+  // The website is served at https://promptshare.cc (custom domain: infra/worker.tf). The gateway
+  // (GatewayMcp) and login (AccountEvents) reach the Worker over Service Bindings.
   "workers_dev": false,
   "preview_urls": false,
 
@@ -15,13 +15,49 @@
     "enabled": false,
   },
 
+  "vars": {
+    // The website's origin, and the resource its sign-in tokens are issued for (login's registry).
+    "SITE_ORIGIN": "https://promptshare.cc",
+    "AUTHORIZATION_SERVER": "https://login.2earl.com",
+    // Where assistants connect (the gateway's Prompt share address).
+    "MCP_ADDRESS": "https://mcp.2earl.com/promptshare",
+  },
+
   // Set by the deploy workflow from the GitHub `production` environment.
   "secrets": {
     "required": [
       // Encrypts shared-session entries (docs/DESIGN.md §7.1).
       "STATE_ENCRYPTION_KEY",
+      // HMAC key for website session and sign-in cookies (only their HMAC is stored).
+      "SESSION_PEPPER",
     ],
   },
+
+  // Static files: styles, icon. Everything else is the Worker.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+  },
+
+  "services": [
+    // Token exchange and validation for the website's sign-in, never over the public Internet.
+    { "binding": "AUTH_SERVER", "service": "login" },
+  ],
+
+  // Per-network limit on sign-in and on the contact and report forms.
+  "ratelimits": [
+    {
+      "name": "FORM_RATE_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 10, "period": 60 },
+    },
+  ],
+
+  // Emails the owner when a contact message or a report arrives (LEGAL.md §2, Art. 16). The
+  // recipient is the CONTACT_TO secret, so no address is in this repository. Optional: without
+  // it, messages are only stored.
+  "send_email": [{ "name": "MAILER" }],
 
   // Created by infra/storage.tf (EU jurisdiction); set after the first terraform apply.
   "d1_databases": [

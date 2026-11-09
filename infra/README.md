@@ -6,8 +6,11 @@ Terraform for the Cloudflare resources around the `promptshare` Worker. Rational
 | File | Manages |
 |---|---|
 | `storage.tf` | D1 database `promptshare`, EU jurisdiction, protected from destroy |
+| `zone.tf` | Reads the `promptshare.cc` zone; its TLS, HSTS, 0-RTT and DNSSEC settings |
+| `worker.tf` | Custom domain `promptshare.cc` → Worker `promptshare` |
 
-Phase P2 adds the `promptshare.cc` zone settings and the custom domain.
+The Cloudflare token needs, on the `promptshare.cc` zone: Zone read, Zone Settings edit, DNSSEC
+edit (Zone Settings covers it), and Workers Routes edit.
 
 ## How changes are applied
 

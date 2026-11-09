@@ -1,0 +1,516 @@
+/*
+ * promptshare.cc
+ * 2earl's palette and type (the mark's four facets; Readex Pro for headings). Prompt share's one
+ * bold element is the address slip: the connect address set on a card cut at 45°, like the
+ * mark's facets. Everything else stays quiet so prompts and entries carry the page.
+ */
+
+@font-face {
+  font-family: 'Readex Pro';
+  src: url('/fonts/readex-pro-latin.woff2') format('woff2');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light dark;
+  --red: #ed1c24;
+  --vermilion: #f15a24;
+  --orange: #f7931e;
+  --amber: #fbb03b;
+
+  --bg: #f7f7f8;
+  --fg: #1c1b1f;
+  --muted: #5c5a60; /* 6.4:1 on --bg */
+  --rule: #e2e1e5;
+  --surface: #ffffff;
+  --link: #b23a0c; /* 5.6:1 on --bg */
+  --alert: #c8141b;
+  --focus: #b23a0c;
+  --button-fg: #1c1b1f; /* 5.1:1 on vermilion */
+
+  --display: 'Readex Pro', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --body: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  accent-color: var(--vermilion);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141315;
+    --fg: #f2f1f3;
+    --muted: #a19fa6;
+    --rule: #2c2a2f;
+    --surface: #1c1b1f;
+    --link: #fbb03b;
+    --alert: #ff7a6b;
+    --focus: #fbb03b;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 1rem/1.6 var(--body);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+a {
+  color: var(--link);
+  text-underline-offset: 0.15em;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.skip {
+  position: absolute;
+  left: -999px;
+}
+.skip:focus {
+  left: 1rem;
+  top: 1rem;
+  background: var(--surface);
+  padding: 0.5rem 1rem;
+  z-index: 10;
+}
+
+h1,
+h2 {
+  font-family: var(--display);
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+h1 {
+  font-size: clamp(1.75rem, 1.2rem + 2.2vw, 2.6rem);
+  font-weight: 600;
+  margin: 0 0 1rem;
+}
+h2 {
+  font-size: 1.2rem;
+  font-weight: 600;
+  margin: 2rem 0 0.5rem;
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+/* ---- Frame ------------------------------------------------------------------------------- */
+
+.top,
+main,
+.foot {
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--fg);
+  text-decoration: none;
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+.brand svg {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.top nav {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+.top nav a:not(.button) {
+  color: var(--fg);
+  text-decoration: none;
+}
+.top nav a[aria-current='page'] {
+  text-decoration: underline;
+  text-decoration-color: var(--vermilion);
+  text-decoration-thickness: 2px;
+}
+
+main {
+  flex: 1;
+  padding-top: 1.5rem;
+  padding-bottom: 3rem;
+  min-width: 0;
+}
+
+.foot {
+  border-top: 1px solid var(--rule);
+  padding-top: 1.25rem;
+  padding-bottom: 2rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.foot nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+}
+.foot a {
+  color: var(--muted);
+}
+
+/* ---- Home ---------------------------------------------------------------------------------- */
+
+.hero {
+  padding: 2rem 0 1rem;
+  max-width: 44rem;
+}
+.hero h1 {
+  font-size: clamp(2rem, 1.3rem + 3.4vw, 3.4rem);
+}
+.lede {
+  font-size: 1.125rem;
+  color: var(--muted);
+  max-width: 40rem;
+}
+
+/* The address slip: Prompt share's signature. */
+.slip {
+  margin: 1.75rem 0;
+  padding: 1.1rem 1.4rem 1.2rem;
+  background: var(--surface);
+  border-left: 6px solid var(--vermilion);
+  clip-path: polygon(0 0, calc(100% - 1.5rem) 0, 100% 1.5rem, 100% 100%, 0 100%);
+  box-shadow: 0 1px 0 var(--rule);
+  max-width: 40rem;
+}
+.slip-label {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.slip-address {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.slip-address code {
+  font-size: clamp(1rem, 0.85rem + 0.9vw, 1.35rem);
+  user-select: all;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1rem;
+  margin-top: 2rem;
+}
+.cards article {
+  background: var(--surface);
+  padding: 1.25rem;
+  border-top: 3px solid var(--rule);
+}
+.cards article:nth-child(1) {
+  border-top-color: var(--vermilion);
+}
+.cards article:nth-child(2) {
+  border-top-color: var(--orange);
+}
+.cards article:nth-child(3) {
+  border-top-color: var(--amber);
+}
+.cards h2 {
+  margin-top: 0;
+}
+.cards p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.steps {
+  padding-left: 1.25rem;
+}
+.steps h2 {
+  margin-top: 1.25rem;
+  font-size: 1.05rem;
+}
+
+/* ---- Controls ----------------------------------------------------------------------------- */
+
+.button {
+  display: inline-block;
+  background: var(--vermilion);
+  color: var(--button-fg);
+  border: 0;
+  padding: 0.65rem 1.2rem;
+  font: 600 1rem/1.2 var(--body);
+  text-decoration: none;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.button:hover {
+  background: var(--orange);
+}
+.button-small {
+  padding: 0.45rem 0.9rem;
+  font-size: 0.95rem;
+}
+.button-quiet {
+  background: transparent;
+  color: var(--fg);
+  box-shadow: inset 0 0 0 1.5px var(--rule);
+}
+.button-quiet:hover {
+  background: var(--surface);
+}
+.button-danger {
+  background: var(--alert);
+  color: #fff;
+}
+.link-button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--link);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.danger {
+  color: var(--alert);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+/* ---- Forms ---------------------------------------------------------------------------------- */
+
+.form {
+  display: grid;
+  gap: 0.35rem;
+  max-width: 44rem;
+}
+.form label:not(.choice),
+.inline-form label,
+.search label,
+legend {
+  font-weight: 600;
+  margin-top: 0.75rem;
+}
+input:not([type='checkbox'], [type='radio']),
+textarea {
+  width: 100%;
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1.5px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.55rem 0.7rem;
+}
+textarea.mono {
+  font-family: var(--mono);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+input[aria-invalid='true'],
+textarea[aria-invalid='true'] {
+  border-color: var(--alert);
+}
+fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+.choice {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+.optional,
+.hint,
+.muted {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 0.92rem;
+}
+.field-error,
+.alert {
+  color: var(--alert);
+  margin: 0.1rem 0 0;
+}
+.alert {
+  border-left: 4px solid var(--alert);
+  padding: 0.5rem 0.9rem;
+  background: var(--surface);
+}
+
+.search,
+.inline-form {
+  margin: 1rem 0 1.5rem;
+  max-width: 36rem;
+}
+.search-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+/* ---- Lists and entries ---------------------------------------------------------------------- */
+
+.title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.title-row h1 {
+  margin: 0;
+}
+
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border-top: 1px solid var(--rule);
+}
+.list a {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--rule);
+  text-decoration: none;
+  color: var(--fg);
+}
+.list a:hover .item-title {
+  text-decoration: underline;
+  text-decoration-color: var(--vermilion);
+}
+.item-title {
+  font-weight: 600;
+}
+.item-meta {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+.tag {
+  display: inline-block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0 0.45rem;
+  border: 1.5px solid var(--orange);
+  border-radius: 2px;
+}
+.empty {
+  color: var(--muted);
+}
+.crumb {
+  margin: 0 0 0.5rem;
+  font-size: 0.92rem;
+}
+
+.entry {
+  background: var(--surface);
+  border-left: 4px solid var(--vermilion);
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+  max-width: 48rem;
+}
+.entry-other {
+  border-left-color: var(--amber);
+}
+.entry header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.entry pre,
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0.5rem 0 0;
+}
+
+.danger-zone {
+  margin-top: 2.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  gap: 1.25rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 48rem;
+}
+.table th,
+.table td {
+  text-align: left;
+  padding: 0.5rem 0.75rem 0.5rem 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+.table code {
+  white-space: nowrap;
+}
+.plain {
+  padding-left: 1.25rem;
+}
+
+@media (max-width: 36rem) {
+  .table code {
+    white-space: normal;
+  }
+  .search-row {
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
