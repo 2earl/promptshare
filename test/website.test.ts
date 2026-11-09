@@ -6,7 +6,8 @@ import { safeReturnTo } from '../src/web/http';
 import { getMessage, moderationCleanup } from '../src/moderation';
 import { remindOwner, sendDecision, sendReceipt } from '../src/notices';
 import { mimeMessage, notifyOwner } from '../src/web/messages';
-import { addMember, count, resetDatabase } from './helpers';
+import { shareCleanup, sharePrompt } from '../src/shares';
+import { addMember, connect, count, parsed, publicPrompt, resetDatabase, tool } from './helpers';
 
 const ORIGIN = 'https://promptshare.cc';
 const SAME_ORIGIN = { Origin: ORIGIN, 'Sec-Fetch-Site': 'same-origin' };
@@ -1023,5 +1024,184 @@ describe('receipt emails', () => {
       });
     }
     expect(sent).toHaveLength(3);
+  });
+});
+
+describe('sharing a prompt with people (DESIGN §4.1)', () => {
+  const T = 1_800_000_000;
+
+  async function setup() {
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO profiles (uid, handle, created_at, updated_at) VALUES ('user-1', 'ada', 1, 1)",
+      ),
+      env.DB.prepare(
+        `INSERT INTO prompts (id, owner_uid, title, body, created_at, updated_at)
+         VALUES ('p1', 'user-1', 'Release notes', 'Write release notes from this diff.', 1, 1)`,
+      ),
+    ]);
+  }
+
+  it('shares by address on the website; the recipient reads and copies it, also through an assistant', async () => {
+    await setup();
+    const author = (await signIn('user-1')).cookie;
+    const shared = await post('/prompts/p1/shares', { email: ' User-2@Users.test ' }, author);
+    expect(shared.status).toBe(200);
+    const page = await shared.text();
+    expect(page).toContain('Shared with user-2@users.test.');
+    expect(page).toContain('Stop sharing');
+    expect(await count('prompt_shares', "prompt_id = 'p1' AND recipient_uid = 'user-2'")).toBe(1);
+
+    const reader = (await signIn('user-2')).cookie;
+    expect(await (await get('/shared', reader)).text()).toContain('Release notes');
+    const view = await (await get('/p/p1', reader)).text();
+    expect(view).toContain('Shared with you by @ada');
+    expect(view).toContain('Remove from my list');
+
+    const client = await connect('user-2');
+    const found = parsed<{ id: string; sharedWithYou: boolean }[]>(
+      (await tool(client, 'search_prompts', { scope: 'shared' })).texts,
+    );
+    expect(found).toMatchObject([{ id: 'p1', sharedWithYou: true }]);
+    const got = await tool(client, 'get_prompt', { id: 'p1' });
+    expect(got.texts[1]).toMatch(/^----- BEGIN SHARED PROMPT [0-9a-f]{8} -----/);
+    expect((await tool(client, 'copy_prompt', { id: 'p1' })).error).toBe(false);
+    expect(await count('prompts', "owner_uid = 'user-2' AND copied_from = 'p1'")).toBe(1);
+
+    // Nobody else sees it; the recipient can't change it.
+    expect((await get('/p/p1', (await signIn('user-3')).cookie)).status).toBe(404);
+    expect((await tool(client, 'update_prompt', { id: 'p1', title: 'x' })).error).toBe(true);
+    expect((await post('/prompts/p1', { title: 'x', body: 'y' }, reader)).status).toBe(404);
+  });
+
+  it('has no assistant tool that shares', async () => {
+    const { tools } = await (await connect('user-1')).listTools();
+    expect(tools.map((t) => t.name).filter((n) => /share/.test(n))).toEqual([]);
+  });
+
+  it('refuses unknown addresses, then locks sharing for 10 minutes, then 20', async () => {
+    await setup();
+    const miss = (n: number, at: number) =>
+      sharePrompt(env, 'user-1', at, 'p1', `nobody${String(n)}@example.com`);
+    await expect(miss(1, T)).rejects.toThrow('No 2earl account uses this address.');
+    await expect(miss(2, T + 1)).rejects.toThrow('No 2earl account');
+    await expect(miss(3, T + 2)).rejects.toThrow('you can share again in 10 minutes');
+    // Locked: even a known address waits, so the lock can't be used to probe.
+    await expect(sharePrompt(env, 'user-1', T + 60, 'p1', 'user-2@users.test')).rejects.toThrow(
+      'You can share again in 10 minutes.',
+    );
+    expect(await count('prompt_shares')).toBe(0);
+    const after = T + 2 + 600;
+    expect(await sharePrompt(env, 'user-1', after, 'p1', 'user-2@users.test')).not.toBeNull();
+    await expect(miss(4, after + 1)).rejects.toThrow('No 2earl account');
+    await expect(miss(5, after + 2)).rejects.toThrow('No 2earl account');
+    await expect(miss(6, after + 3)).rejects.toThrow('in 20 minutes');
+  });
+
+  it('locks for the rest of the day after 20 unknown addresses', async () => {
+    await setup();
+    for (let i = 0; i < 20; i++) {
+      await env.DB.prepare("INSERT INTO share_misses (uid, at) VALUES ('user-1', ?)")
+        .bind(T - 3 * 3600 + i * 360)
+        .run();
+    }
+    await expect(sharePrompt(env, 'user-1', T, 'p1', 'x@example.com')).rejects.toThrow(
+      'in 21 hours',
+    );
+  });
+
+  it('refuses your own address, a second time, public prompts, no handle, and other people’s prompts', async () => {
+    await setup();
+    await expect(sharePrompt(env, 'user-1', T, 'p1', 'user-1@users.test')).rejects.toThrow(
+      'your own address',
+    );
+    await sharePrompt(env, 'user-1', T, 'p1', 'user-2@users.test');
+    await expect(sharePrompt(env, 'user-1', T, 'p1', 'USER-2@users.test')).rejects.toThrow(
+      'already shared',
+    );
+    expect(await sharePrompt(env, 'user-2', T, 'p1', 'user-3@users.test')).toBeNull();
+    await expect(sharePrompt(env, 'user-1', T, 'p1', 'not an address')).rejects.toThrow(
+      'Enter one email address.',
+    );
+    await env.DB.prepare("DELETE FROM profiles WHERE uid = 'user-1'").run();
+    await expect(sharePrompt(env, 'user-1', T, 'p1', 'user-3@users.test')).rejects.toThrow(
+      'Choose a handle first',
+    );
+    const pub = await publicPrompt('user-1', 'Open', 'b');
+    await expect(sharePrompt(env, 'user-1', T, pub, 'user-3@users.test')).rejects.toThrow('public');
+    // A miss caused by a mistake other than the address doesn't count towards the lock.
+    expect(await count('share_misses')).toBe(0);
+  });
+
+  it('allows 50 people per prompt', async () => {
+    await setup();
+    for (let i = 0; i < 50; i++) {
+      await env.DB.prepare(
+        "INSERT INTO prompt_shares (id, prompt_id, owner_uid, recipient_uid, email, created_at) VALUES (?, 'p1', 'user-1', ?, ?, 1)",
+      )
+        .bind(`s${String(i)}`, `r${String(i)}`, `r${String(i)}@users.test`)
+        .run();
+    }
+    await expect(sharePrompt(env, 'user-1', T, 'p1', 'user-2@users.test')).rejects.toThrow(
+      'at most 50 people',
+    );
+  });
+
+  it('stops sharing, or the recipient removes it; only the author can stop it', async () => {
+    await setup();
+    const share = await sharePrompt(env, 'user-1', T, 'p1', 'user-2@users.test');
+    await sharePrompt(env, 'user-1', T, 'p1', 'user-3@users.test');
+    const reader = (await signIn('user-2')).cookie;
+    expect((await post(`/prompts/p1/shares/${share?.id ?? ''}/remove`, {}, reader)).status).toBe(
+      404,
+    );
+    const author = (await signIn('user-1')).cookie;
+    expect((await post(`/prompts/p1/shares/${share?.id ?? ''}/remove`, {}, author)).status).toBe(
+      303,
+    );
+    expect((await get('/p/p1', reader)).status).toBe(404);
+
+    const other = (await signIn('user-3')).cookie;
+    expect((await post('/p/p1/dismiss', {}, other)).status).toBe(303);
+    expect((await get('/p/p1', other)).status).toBe(404);
+    expect(await count('prompt_shares')).toBe(0);
+  });
+
+  it('hides a prompt restricted by moderation from the people it is shared with', async () => {
+    await setup();
+    await sharePrompt(env, 'user-1', T, 'p1', 'user-2@users.test');
+    await env.DB.prepare("UPDATE prompts SET status = 'restricted' WHERE id = 'p1'").run();
+    expect((await get('/p/p1', (await signIn('user-2')).cookie)).status).toBe(404);
+  });
+
+  it('goes with the prompt, and with either account; the export lists it', async () => {
+    await setup();
+    await sharePrompt(env, 'user-1', T, 'p1', 'user-2@users.test');
+    const exported = await exportUserData(env.DB, env.STATE_ENCRYPTION_KEY, 'user-1');
+    expect(exported.promptShares).toMatchObject([
+      { prompt: 'p1', sharedWith: 'user-2@users.test' },
+    ]);
+    expect(
+      (await exportUserData(env.DB, env.STATE_ENCRYPTION_KEY, 'user-2')).promptsSharedWithYou,
+    ).toMatchObject([{ prompt: 'p1' }]);
+
+    await deleteUserData(env.DB, 'user-2', T);
+    expect(await count('prompt_shares')).toBe(0);
+    await sharePrompt(env, 'user-1', T, 'p1', 'user-3@users.test');
+    expect((await post('/prompts/p1/delete', {}, (await signIn('user-1')).cookie)).status).toBe(
+      303,
+    );
+    expect(await count('prompt_shares')).toBe(0);
+    await env.DB.prepare("INSERT INTO share_misses (uid, at) VALUES ('user-1', 1)").run();
+    await deleteUserData(env.DB, 'user-1', T);
+    expect(await count('share_misses')).toBe(0);
+  });
+
+  it('forgets misses after a day', async () => {
+    await env.DB.prepare("INSERT INTO share_misses (uid, at) VALUES ('user-1', ?), ('user-1', ?)")
+      .bind(T - 2 * 86400, T - 60)
+      .run();
+    await shareCleanup(env.DB, T);
+    expect(await count('share_misses')).toBe(1);
   });
 });

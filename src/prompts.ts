@@ -1,7 +1,8 @@
 /**
  * Prompts (docs/DESIGN.md §4). Every query is keyed by the caller: a prompt is visible to its
- * owner always, including after moderation, and to every 2earl user while it is public and
- * active. "Not found" covers both missing and not visible.
+ * owner always, including after moderation; while it is active, to every 2earl user if it is
+ * public, and to the people it is shared with (§4.1). "Not found" covers both missing and not
+ * visible.
  */
 
 export const PROMPT_LIMITS = {
@@ -40,6 +41,10 @@ interface PromptRow {
   published_at: number | null;
   /** The owner's handle, if they chose one (profiles). */
   author: string | null;
+  /** 1 when the owner shared it with the caller. */
+  shared: number;
+  /** How many people the caller shared it with; 0 unless the caller is the owner. */
+  share_count: number;
 }
 
 export interface Prompt {
@@ -55,6 +60,10 @@ export interface Prompt {
   copiedFrom: string | null;
   /** The owner's handle: what other users see as the author. */
   author: string | null;
+  /** Someone else's prompt they shared with you (§4.1). */
+  sharedWithYou: boolean;
+  /** Your own prompt: how many people you shared it with. */
+  shareCount: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -67,12 +76,16 @@ export class PromptError extends Error {
 
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
 
-/** Visible to `uid`: their own, or public and active. */
-const VISIBLE = `(p.owner_uid = ?1 OR (p.visibility = 'public' AND p.status = 'active'))`;
+const SHARED_WITH_CALLER =
+  'EXISTS (SELECT 1 FROM prompt_shares s WHERE s.prompt_id = p.id AND s.recipient_uid = ?1)';
 
-/** Every prompt query: the prompt and its author's handle. */
-const SELECT =
-  'SELECT p.*, pr.handle AS author FROM prompts p LEFT JOIN profiles pr ON pr.uid = p.owner_uid';
+/** Visible to `uid` (?1): their own, or active and either public or shared with them. */
+const VISIBLE = `(p.owner_uid = ?1 OR (p.status = 'active' AND (p.visibility = 'public' OR ${SHARED_WITH_CALLER})))`;
+
+/** Every prompt query: the prompt, its author's handle, and whether it is shared with ?1. */
+const COLUMNS = `p.*, pr.handle AS author, ${SHARED_WITH_CALLER} AS shared,
+  (SELECT COUNT(*) FROM prompt_shares c WHERE c.prompt_id = p.id AND p.owner_uid = ?1) AS share_count`;
+const SELECT = `SELECT ${COLUMNS} FROM prompts p LEFT JOIN profiles pr ON pr.uid = p.owner_uid`;
 
 function toPrompt(row: PromptRow, uid: string): Prompt {
   return {
@@ -87,6 +100,8 @@ function toPrompt(row: PromptRow, uid: string): Prompt {
     status: row.status,
     copiedFrom: row.copied_from,
     author: row.author,
+    sharedWithYou: row.owner_uid !== uid && row.shared === 1,
+    shareCount: row.owner_uid === uid ? row.share_count : 0,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -142,17 +157,21 @@ export function ftsQuery(text: string): string | null {
     .join(' ');
 }
 
+/** mine: your own. public: public prompts. shared: others' prompts shared with you. all. */
+export type SearchScope = 'mine' | 'public' | 'shared' | 'all';
+
 export async function searchPrompts(
   db: D1Database,
   uid: string,
-  options: { query?: string | undefined; scope: 'mine' | 'public' | 'all' },
+  options: { query?: string | undefined; scope: SearchScope },
 ): Promise<PromptSummary[]> {
   const where = [VISIBLE];
   if (options.scope === 'mine') where.push('p.owner_uid = ?1');
   if (options.scope === 'public') where.push(`p.visibility = 'public' AND p.status = 'active'`);
+  if (options.scope === 'shared') where.push(`p.owner_uid <> ?1 AND ${SHARED_WITH_CALLER}`);
   const match = options.query ? ftsQuery(options.query) : null;
   const sql = match
-    ? `SELECT p.*, pr.handle AS author FROM prompts_fts f JOIN prompts p ON p.rowid = f.rowid
+    ? `SELECT ${COLUMNS} FROM prompts_fts f JOIN prompts p ON p.rowid = f.rowid
        LEFT JOIN profiles pr ON pr.uid = p.owner_uid
        WHERE prompts_fts MATCH ?2 AND ${where.join(' AND ')}
        ORDER BY bm25(prompts_fts), p.updated_at DESC LIMIT ${String(PROMPT_LIMITS.searchResults)}`
@@ -271,14 +290,14 @@ export async function unpublishPrompt(
 }
 
 export async function deletePrompt(db: D1Database, uid: string, id: string): Promise<boolean> {
-  const { meta } = await db
-    .prepare('DELETE FROM prompts WHERE id = ? AND owner_uid = ?')
-    .bind(id, uid)
-    .run();
-  return meta.changes > 0;
+  const [, deleted] = await db.batch([
+    db.prepare('DELETE FROM prompt_shares WHERE prompt_id = ? AND owner_uid = ?').bind(id, uid),
+    db.prepare('DELETE FROM prompts WHERE id = ? AND owner_uid = ?').bind(id, uid),
+  ]);
+  return (deleted?.meta.changes ?? 0) > 0;
 }
 
-/** A private copy of a prompt the caller can see, owned by the caller. */
+/** A private copy of a prompt the caller can see (public or shared), owned by the caller. */
 export async function copyPrompt(
   db: D1Database,
   uid: string,

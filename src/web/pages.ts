@@ -1,5 +1,6 @@
 import { SESSION_LIMITS } from '../sessions';
 import { PROMPT_LIMITS, type Prompt, type PromptSummary } from '../prompts';
+import { SHARE_LIMITS, type Share } from '../shares';
 import type { Entry, Invitation, Member, SessionSummary } from '../sessions';
 import { SENSITIVE_CONSENT_TEXT, type ConsentDecision } from '../consent';
 import { ACTIONS, type Decision, type Message, type ReportedContent } from '../moderation';
@@ -163,12 +164,13 @@ export function promptList(prompts: PromptSummary[], query: string): string {
   const rows = prompts
     .map(
       (p) => `<li><a href="/prompts/${esc(p.id)}"><span class="item-title">${esc(p.title)}</span>
-<span class="item-meta">${p.visibility === 'public' ? '<span class="tag">Public</span> ' : ''}${p.description ? esc(p.description) + ' · ' : ''}changed ${esc(date(p.updatedAt))}</span></a></li>`,
+<span class="item-meta">${p.visibility === 'public' ? '<span class="tag">Public</span> ' : ''}${p.shareCount ? `<span class="tag">Shared with ${String(p.shareCount)}</span> ` : ''}${p.description ? esc(p.description) + ' · ' : ''}changed ${esc(date(p.updatedAt))}</span></a></li>`,
     )
     .join('');
   return layout(
     'Your prompts',
     `<div class="title-row"><h1>Your prompts</h1><a class="button" href="/prompts/new">New prompt</a></div>
+<p class="actions"><a class="text-link" href="/shared">Shared with you</a></p>
 <form class="search" method="get" action="/prompts" role="search">
 <label for="q">Search your prompts</label>
 <div class="search-row"><input id="q" name="q" type="search" value="${esc(query)}" maxlength="200"><button class="button button-quiet" type="submit">Search</button></div>
@@ -187,16 +189,49 @@ export interface PromptForm {
   models: string;
 }
 
+/** The share section of the author's prompt page (DESIGN §4.1). */
+export interface ShareState {
+  shares: Share[];
+  error: string | null;
+  sharedWith: string | null;
+}
+
+function shareSection(prompt: Prompt, state: ShareState): string {
+  if (prompt.visibility !== 'private' || prompt.status !== 'active') return '';
+  const rows = state.shares
+    .map(
+      (share) => `<li><span>${esc(share.email)}</span>
+<form method="post" action="/prompts/${esc(prompt.id)}/shares/${esc(share.id)}/remove"><button class="button button-quiet button-small" type="submit">Stop sharing</button></form></li>`,
+    )
+    .join('');
+  return `<section class="members" aria-labelledby="share-title">
+<h2 id="share-title">Share with people</h2>
+<p class="hint">They can read and copy this prompt on promptshare.cc and through their assistant, with your handle as who shared it. They see your changes, but can’t make any. Prompt share doesn’t email them: they find it under “Shared with you”.</p>
+${state.error ? `<p class="alert" role="alert">${esc(state.error)}</p>` : ''}
+${state.sharedWith ? `<p class="muted" role="status">Shared with ${esc(state.sharedWith)}.</p>` : ''}
+${rows ? `<ul class="people">${rows}</ul>` : ''}
+${
+  state.shares.length < SHARE_LIMITS.recipientsPerPrompt
+    ? `<form class="inline-form" method="post" action="/prompts/${esc(prompt.id)}/shares">
+<label for="shareEmail">Email address of their 2earl account</label>
+<div class="search-row"><input id="shareEmail" name="email" type="email" required maxlength="254" autocomplete="off"><button class="button button-quiet" type="submit">Share</button></div>
+</form>`
+    : `<p class="muted">Shared with ${String(SHARE_LIMITS.recipientsPerPrompt)} people, the most for one prompt.</p>`
+}
+</section>`;
+}
+
 export function promptEditor(
   mode: { kind: 'new' } | { kind: 'edit'; prompt: Prompt },
   form: PromptForm,
   error: string | null,
+  share: ShareState = { shares: [], error: null, sharedWith: null },
 ): string {
   const action = mode.kind === 'new' ? '/prompts' : `/prompts/${esc(mode.prompt.id)}`;
   const heading = mode.kind === 'new' ? 'New prompt' : form.title || 'Prompt';
   const status =
     mode.kind === 'edit'
-      ? `<p class="muted">${mode.prompt.visibility === 'public' ? '<span class="tag">Public</span> Every 2earl user can see this prompt. ' : 'Private: only you can see it. '}Changed ${esc(date(mode.prompt.updatedAt))}.${mode.prompt.copiedFrom ? ' Copied from a public prompt.' : ''}</p>`
+      ? `<p class="muted">${mode.prompt.visibility === 'public' ? '<span class="tag">Public</span> Every 2earl user can see this prompt. ' : share.shares.length ? `Private: only you and the ${String(share.shares.length)} ${share.shares.length === 1 ? 'person' : 'people'} you shared it with can see it. ` : 'Private: only you can see it. '}Changed ${esc(date(mode.prompt.updatedAt))}.${mode.prompt.copiedFrom ? ' Copied from a public prompt.' : ''}</p>`
       : '';
   const after =
     mode.kind === 'edit'
@@ -226,6 +261,7 @@ ${error ? `<p class="alert" role="alert">${esc(error)}</p>` : ''}
 <input id="models" name="models" value="${esc(form.models)}">
 <p><button class="button" type="submit">${mode.kind === 'new' ? 'Save prompt' : 'Save changes'}</button></p>
 </form>
+${mode.kind === 'edit' ? shareSection(mode.prompt, share) : ''}
 ${after}`,
     { signedIn: true },
     '/prompts',
@@ -430,20 +466,45 @@ ${prompts.length ? `<ul class="list">${rows}</ul>` : `<p class="empty">${query ?
   );
 }
 
+export function sharedList(prompts: PromptSummary[], query: string): string {
+  const rows = prompts
+    .map(
+      (p) => `<li><a href="/p/${esc(p.id)}"><span class="item-title">${esc(p.title)}</span>
+<span class="item-meta">${p.author ? `from @${esc(p.author)}` : ''}${p.description ? ' · ' + esc(p.description) : ''} · changed ${esc(date(p.updatedAt))}</span></a></li>`,
+    )
+    .join('');
+  return layout(
+    'Shared with you',
+    `<p class="crumb"><a href="/prompts">Your prompts</a></p>
+<h1>Shared with you</h1>
+<p class="lede">Prompts other 2earl users shared with your address. Copy one to change it.</p>
+<form class="search" method="get" action="/shared" role="search">
+<label for="q">Search prompts shared with you</label>
+<div class="search-row"><input id="q" name="q" type="search" value="${esc(query)}" maxlength="200"><button class="button button-quiet" type="submit">Search</button></div>
+</form>
+${prompts.length ? `<ul class="list">${rows}</ul>` : `<p class="empty">${query ? 'No shared prompts match.' : 'Nothing shared with you yet.'}</p>`}`,
+    { signedIn: true },
+    '/prompts',
+  );
+}
+
 export function publicPrompt(prompt: Prompt, origin: string): string {
+  const shared = prompt.sharedWithYou && prompt.visibility === 'private';
+  const by = prompt.author ? `@${esc(prompt.author)}` : 'a 2earl user';
   return layout(
     prompt.title,
-    `<p class="crumb"><a href="/explore">Public prompts</a></p>
+    `<p class="crumb">${shared ? '<a href="/shared">Shared with you</a>' : '<a href="/explore">Public prompts</a>'}</p>
 <h1>${esc(prompt.title)}</h1>
-<p class="muted">${prompt.author ? `By @${esc(prompt.author)}` : 'By a 2earl user'}${prompt.models.length ? ` · for ${esc(prompt.models.join(', '))}` : ''} · changed ${esc(date(prompt.updatedAt))}</p>
+<p class="muted">${shared ? `Shared with you by ${by}` : prompt.author ? `By @${esc(prompt.author)}` : 'By a 2earl user'}${prompt.models.length ? ` · for ${esc(prompt.models.join(', '))}` : ''} · changed ${esc(date(prompt.updatedAt))}</p>
 ${prompt.description ? `<p>${esc(prompt.description)}</p>` : ''}
 <pre class="prompt-body">${esc(prompt.body)}</pre>
 <div class="actions">
 ${prompt.mine ? `<a class="button button-quiet" href="/prompts/${esc(prompt.id)}">Edit your prompt</a>` : `<form method="post" action="/p/${esc(prompt.id)}/copy"><button class="button" type="submit">Copy to my prompts</button></form>`}
+${prompt.sharedWithYou ? `<form method="post" action="/p/${esc(prompt.id)}/dismiss"><button class="button button-quiet" type="submit">Remove from my list</button></form>` : ''}
 <a class="text-link" href="/report?url=${encodeURIComponent(`${origin}/p/${prompt.id}`)}">Report</a>
 </div>`,
     { signedIn: true },
-    '/explore',
+    shared ? '/prompts' : '/explore',
   );
 }
 

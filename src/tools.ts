@@ -13,6 +13,7 @@ import {
   unpublishPrompt,
   updatePrompt,
   type Prompt,
+  type SearchScope,
 } from './prompts';
 import {
   SessionError,
@@ -29,8 +30,8 @@ import {
  * The MCP tools behind the gateway (docs/DESIGN.md §6). The gateway lists them as
  * `promptshare__<name>` and checks permissions first; every tool checks again here.
  *
- * Publishing and inviting are not tools (DESIGN D7): they make content visible to others, and an
- * assistant can be steered by text it reads.
+ * Publishing, sharing a prompt and inviting are not tools (DESIGN D7): they make content visible
+ * to others, and an assistant can be steered by text it reads.
  */
 
 export const SERVER_INFO = { name: 'promptshare', version: '0.1.0' };
@@ -60,7 +61,12 @@ function promptResult(prompt: Prompt): Result {
   return {
     content: [
       { type: 'text', text: JSON.stringify(meta, null, 2) },
-      { type: 'text', text: prompt.mine ? body : untrusted('PUBLIC PROMPT', body) },
+      {
+        type: 'text',
+        text: prompt.mine
+          ? body
+          : untrusted(prompt.visibility === 'public' ? 'PUBLIC PROMPT' : 'SHARED PROMPT', body),
+      },
     ],
   };
 }
@@ -115,7 +121,7 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Search prompts',
       description:
-        'Searches your saved prompts and the public prompts of other 2earl users. Returns titles, descriptions and IDs; use get_prompt for the text.',
+        'Searches your saved prompts, prompts other 2earl users shared with you, and public prompts. Returns titles, descriptions and IDs; use get_prompt for the text.',
       inputSchema: z.object({
         query: z
           .string()
@@ -123,15 +129,17 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
           .optional()
           .describe('Words to look for. Empty lists the newest.'),
         scope: z
-          .enum(['mine', 'public', 'all'])
+          .enum(['mine', 'shared', 'public', 'all'])
           .default('all')
-          .describe('mine: only yours. public: only other people’s public prompts. all: both.'),
+          .describe(
+            'mine: only yours. shared: others’ prompts shared with you. public: public prompts. all: every prompt you can see.',
+          ),
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     guarded(
       SCOPES.read,
-      async ({ query, scope }: { query?: string | undefined; scope: 'mine' | 'public' | 'all' }) =>
+      async ({ query, scope }: { query?: string | undefined; scope: SearchScope }) =>
         json(await searchPrompts(db, caller.uid, { query, scope })),
     ),
   );
@@ -141,7 +149,7 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Get a prompt',
       description:
-        'Gets one prompt with its full text. A public prompt written by another 2earl user comes marked as theirs.',
+        'Gets one prompt with its full text. A prompt written by another 2earl user (public, or shared with you) comes marked as theirs.',
       inputSchema: z.object({ id }),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -281,7 +289,7 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Copy a prompt',
       description:
-        'Copies a public prompt into the user’s own prompts, as a private prompt they can change.',
+        'Copies a public prompt, or one shared with the user, into the user’s own prompts, as a private prompt they can change.',
       inputSchema: z.object({ id }),
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     },

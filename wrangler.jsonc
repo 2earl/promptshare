@@ -45,6 +45,8 @@
   "services": [
     // Token exchange and validation for the website's sign-in, never over the public Internet.
     { "binding": "AUTH_SERVER", "service": "login" },
+    // Finds the account with a verified email address, for sharing a prompt (DESIGN §4.1).
+    { "binding": "DIRECTORY", "service": "login", "entrypoint": "PromptshareDirectory" },
   ],
 
   // Per-network limit on sign-in and on the contact and report forms.

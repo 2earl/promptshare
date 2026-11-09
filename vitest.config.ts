@@ -29,6 +29,13 @@ export default defineConfig(async () => {
                 import { WorkerEntrypoint } from 'cloudflare:workers';
                 const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)))
                   .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+                // An address "<uid>@users.test" belongs to the account <uid>; others have none.
+                export class PromptshareDirectory extends WorkerEntrypoint {
+                  async uidForEmail(email) {
+                    const m = /^([a-z0-9-]+)@users\\.test$/.exec(email.trim().toLowerCase());
+                    return m ? m[1] : null;
+                  }
+                }
                 export default class extends WorkerEntrypoint {
                   async fetch(request) {
                     const url = new URL(request.url);
