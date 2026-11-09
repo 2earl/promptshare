@@ -25,7 +25,10 @@ import {
   loadSession,
   renameSession,
   saveToSession,
+  searchSession,
   updateBrief,
+  updateTask,
+  type TaskStatus,
   type Entry,
   type EntryKind,
 } from './sessions';
@@ -76,7 +79,7 @@ function promptResult(prompt: Prompt): Result {
 }
 
 function entryText(entry: Entry): string {
-  const head = `[${entry.kind === 'brief' ? 'BRIEF · ' : ''}${entry.kind !== 'brief' && entry.kind !== 'note' ? `${entry.kind} · ` : ''}${entry.createdAt}${entry.label ? ` · ${entry.label}` : ''} · id ${entry.id}${entry.replyTo ? ` · reply to ${entry.replyTo}` : ''}]`;
+  const head = `[${entry.kind === 'brief' ? 'BRIEF · ' : ''}${entry.kind !== 'brief' && entry.kind !== 'note' ? `${entry.kind} · ` : ''}${entry.createdAt}${entry.label ? ` · ${entry.label}` : ''} · id ${entry.id}${entry.replyTo ? ` · reply to ${entry.replyTo}` : ''}${entry.task ? ` · ${entry.task.status}${entry.task.assignedToYou ? ' · assigned to you' : entry.task.assignee ? ` · assigned to @${entry.task.assignee}` : ''}` : ''}]`;
   if (entry.mine) return `${head} written by you\n${entry.text}`;
   const by = entry.author ? `@${entry.author}` : 'another member';
   return `${head} written by ${by}\n${untrusted('ENTRY BY ANOTHER MEMBER', entry.text)}`;
@@ -385,6 +388,7 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
         since: z.string().max(64).optional().describe('Only entries newer than this entry ID.'),
         before: z.string().max(64).optional().describe('Only entries older than this entry ID.'),
         kind: z.enum(ENTRY_KINDS).optional().describe('Only entries of this kind.'),
+        status: z.enum(['open', 'done']).optional().describe('Only tasks that are open, or done.'),
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
       _meta: STATE_META,
@@ -396,16 +400,19 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
         since,
         before,
         kind,
+        status,
       }: {
         id: string;
         since?: string | undefined;
         before?: string | undefined;
         kind?: EntryKind | undefined;
+        status?: TaskStatus | undefined;
       }) => {
         const session = await loadSession(db, secret, caller.uid, id, {
           since,
           before,
           kind,
+          status,
           markReadAt: now(),
         });
         if (!session) return fail('No shared session with that ID that you belong to.');
@@ -462,6 +469,11 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
         label: z.string().max(200).optional().describe('A short name for this entry.'),
         kind: z.enum(ENTRY_KINDS).default('note'),
         replyTo: z.string().max(64).optional().describe('The ID of the entry this one answers.'),
+        assignee: z
+          .string()
+          .max(40)
+          .optional()
+          .describe('For a task: the handle of the member it is assigned to.'),
       }),
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
       _meta: STATE_META,
@@ -474,17 +486,20 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
         label,
         kind,
         replyTo,
+        assignee,
       }: {
         id: string;
         text: string;
         label?: string | undefined;
         kind: EntryKind;
         replyTo?: string | undefined;
+        assignee?: string | undefined;
       }) => {
         try {
           const entry = await saveToSession(db, secret, caller, now(), id, body, label, {
             kind,
             replyTo,
+            assignee,
           });
           if (!entry) return fail('No shared session with that ID that you belong to.');
           await log('session.entry_added', { session: id, entry: entry.id });
@@ -498,6 +513,89 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
           }
           throw error;
         }
+      },
+    ),
+  );
+
+  server.registerTool(
+    'update_task',
+    {
+      title: 'Update a task',
+      description:
+        'Marks a task entry in a shared session open or done, or assigns it to a member by handle (an empty handle: nobody). The task’s text stays as it was written.',
+      inputSchema: z.object({
+        id,
+        entry: z.string().max(64).describe('The task entry’s ID.'),
+        status: z.enum(['open', 'done']).optional(),
+        assignee: z.string().max(40).optional().describe('A member’s handle; empty for nobody.'),
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      _meta: STATE_META,
+    },
+    guarded(
+      SCOPES.state,
+      async ({
+        id,
+        entry,
+        status,
+        assignee,
+      }: {
+        id: string;
+        entry: string;
+        status?: TaskStatus | undefined;
+        assignee?: string | undefined;
+      }) =>
+        (await updateTask(db, caller.uid, now(), id, entry, { status, assignee }))
+          ? text('Updated.')
+          : fail('No task with that ID in a session you belong to.'),
+    ),
+  );
+
+  server.registerTool(
+    'search_session',
+    {
+      title: 'Search a shared session',
+      description:
+        'Finds entries in one shared session (and its current brief) that contain all the given words, newest first. Each call reads part of a long session; `continueBefore` in the result says where to go on.',
+      inputSchema: z.object({
+        id,
+        query: z.string().max(200),
+        before: z
+          .string()
+          .max(64)
+          .optional()
+          .describe('The continueBefore value of the previous search.'),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      _meta: STATE_META,
+    },
+    guarded(
+      SCOPES.state,
+      async ({ id, query, before }: { id: string; query: string; before?: string | undefined }) => {
+        const result = await searchSession(db, secret, caller.uid, id, query, before);
+        if (!result) return fail('No shared session with that ID that you belong to.');
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  matches: result.matches.length,
+                  entriesSearched: result.searched,
+                  continueBefore: result.continueBefore,
+                },
+                null,
+                2,
+              ),
+            },
+            ...result.matches.map((entry) => ({ type: 'text' as const, text: entryText(entry) })),
+          ],
+        };
       },
     ),
   );

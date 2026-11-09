@@ -215,6 +215,17 @@ How S2 is built:
 - **Starting from a prompt** works with the user's own prompts only: the brief would show
   another user's text as the user's. Copy it first.
 
+How S3 is built:
+- **CPU budget.** The free plan allows 10 ms of CPU per request. Decrypting a full 5 MB session
+  took about 110 ms locally, after two changes: ciphertext is read as `hex()` and decoded with
+  `Uint8Array.fromHex` (D1's default, an array of numbers per BLOB, took 390 ms), and the derived
+  key is cached per isolate. So search and export read at most 512 KB per request, by stored
+  size: search goes newest first and says where to continue (`continueBefore`); export comes in
+  numbered parts, oldest first, with the brief in part 1. On Workers Paid the budget can grow.
+- **Tasks** are entries of kind `task` with `task_status` and `assignee_uid`. Changing them doesn't
+  change the text. An assignee must be a member with a handle; leaving the session or deleting the
+  account clears the assignment.
+
 Kept as they are:
 - **Entries are never edited** (it stays clear who wrote what). The brief is the part that is
   meant to change, and it has a history.
@@ -241,6 +252,8 @@ trust: 'first-party' }`. Tools appear to assistants as `promptshare__<tool>`.
 | `save_to_session` | Add an entry of a kind, optionally as a reply | `state` |
 | `update_session_brief` | Replace the session's brief; earlier versions stay | `state` |
 | `rename_session` | Rename a session you own | `state` |
+| `update_task` | Mark a task open or done, or assign it to a member | `state` |
+| `search_session` | Find entries holding all given words in one session | `state` |
 | `delete_session_entry` | Delete an entry you wrote (the owner: any entry) | `state` |
 | `delete_session` | Delete a session you own, for every member | `state` |
 
@@ -286,7 +299,7 @@ repositories.
 | `prompt_shares` | prompt, author, recipient's `uid`, the address the author typed | Until the author stops sharing, the recipient removes it, or either account is deleted |
 | `share_misses`, `share_locks` | when an author tried an address without an account; their lock | 1 day |
 | `shared_sessions`, `session_members` | title, owner, members and roles, when each member last loaded the newest entries | Until deleted |
-| `session_entries` | **encrypted** text, kind (including brief versions), the entry it replies to, label, author `uid`, client ID, size, time | Until deleted |
+| `session_entries` | **encrypted** text, kind (including brief versions), the entry it replies to, task status and assignee, label, author `uid`, client ID, size, time | Until deleted |
 | `invitations` | hash of the link token, session, role, creator, expiry, use | 7 days, single use |
 | `web_sessions` | hash of the website session cookie, `uid`, times | 12 h idle / 7 days |
 | `reports`, `moderation_decisions` | §8 | LEGAL.md §4 |
@@ -378,7 +391,7 @@ login's "Download your data" includes it.
 | P2 / C2c | Explicit consent for sensitive data (asked once, withdrawable); owner reminded of messages open 30 minutes; reporters emailed receipt and decision when the owner turns it on (Workers Paid) | Built |
 | S1 | Sharing a private prompt with people by email (§4.1): login's `PromptshareDirectory`, `prompt_shares`, "Shared with you" on the website and through assistants; privacy policy | Built |
 | S2 | Sessions: brief with history, `since` and new-entry counts, entry kinds, replies, renaming, starting from a prompt (§5.1) | Built |
-| S3 | Sessions: search within a session, tasks, Markdown export (§5.1) | Proposed |
+| S3 | Sessions: search within a session, tasks with status and assignee, Markdown export (§5.1) | Built |
 | P3 | MCP prompts primitive through the gateway; prompt versions | |
 
 Public prompts can't exist before C2, because publishing is a website action. So nothing public

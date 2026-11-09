@@ -44,6 +44,9 @@ import {
   loadSession,
   renameSession,
   updateBrief,
+  updateTask,
+  searchSession,
+  exportSession,
   ENTRY_KINDS,
   type EntryKind,
   previewInvitation,
@@ -531,6 +534,7 @@ export function createApp(now: () => number) {
       label: text(form.label),
       kind: entryKind(text(form.kind)),
       replyTo: text(form.replyTo),
+      assignee: text(form.assignee),
     };
     try {
       const entry = await saveToSession(
@@ -541,7 +545,11 @@ export function createApp(now: () => number) {
         c.req.param('id'),
         draft.text,
         draft.label,
-        { kind: draft.kind, replyTo: draft.replyTo },
+        {
+          kind: draft.kind,
+          replyTo: draft.replyTo,
+          assignee: draft.kind === 'task' ? draft.assignee : undefined,
+        },
       );
       if (!entry) return notFound(c, 'session');
       return c.redirect(`/sessions/${c.req.param('id')}`, 303);
@@ -549,6 +557,81 @@ export function createApp(now: () => number) {
       if (!(error instanceof SessionError)) throw error;
       return showSession(c, uid, error.message, draft);
     }
+  });
+
+  app.post('/sessions/:id/entries/:entry/task', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const status = text((await c.req.parseBody()).status) === 'done' ? 'done' : 'open';
+    try {
+      if (
+        !(await updateTask(c.env.DB, uid, c.get('now'), c.req.param('id'), c.req.param('entry'), {
+          status,
+        }))
+      )
+        return notFound(c, 'task');
+    } catch (error) {
+      if (!(error instanceof SessionError)) throw error;
+      return showSession(c, uid, error.message);
+    }
+    return c.redirect(`/sessions/${c.req.param('id')}#entry-${c.req.param('entry')}`, 303);
+  });
+
+  app.get('/sessions/:id/search', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const id = c.req.param('id');
+    const query = c.req.query('q') ?? '';
+    try {
+      const result = await searchSession(
+        c.env.DB,
+        c.env.STATE_ENCRYPTION_KEY,
+        uid,
+        id,
+        query,
+        c.req.query('before'),
+      );
+      const session = result && (await listSessions(c.env.DB, uid)).find((s) => s.id === id);
+      if (!result || !session) return notFound(c, 'session');
+      return html(c, pages.sessionSearch(id, session.title, query, result));
+    } catch (error) {
+      if (!(error instanceof SessionError)) throw error;
+      return showSession(c, uid, error.message);
+    }
+  });
+
+  // Markdown, in parts of at most 512 KB, so each request stays within the CPU limit.
+  app.get('/sessions/:id/export', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const id = c.req.param('id');
+    const asked = c.req.query('part');
+    const part = asked ? Number.parseInt(asked, 10) : 1;
+    const result = await exportSession(
+      c.env.DB,
+      c.env.STATE_ENCRYPTION_KEY,
+      uid,
+      id,
+      part,
+      c.get('now'),
+    );
+    if (!result) return notFound(c, 'session');
+    if (!asked && result.parts > 1)
+      return html(c, pages.exportParts(id, result.title, result.parts));
+    const slug =
+      result.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 60) || 'session';
+    return new Response(result.markdown, {
+      headers: {
+        'Content-Type': 'text/markdown; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${slug}${result.parts > 1 ? `-part-${String(result.part)}` : ''}.md"`,
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    });
   });
 
   app.post('/sessions/:id/entries/:entry/delete', async (c) => {
