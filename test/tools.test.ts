@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { SCOPES } from '../src/caller';
 import { credentialIn } from '../src/credentials';
 import { ftsQuery } from '../src/prompts';
-import { removeMember } from '../src/sessions';
+import { diffLines, removeMember } from '../src/sessions';
 import { deleteUserData } from '../src/account';
 import {
   ALL,
@@ -676,5 +676,159 @@ describe('sessions: tasks and search (phase S3)', () => {
       matches: 1,
       continueBefore: null,
     });
+  });
+});
+
+describe('sessions: staying current (load by title, brief freshness, safe brief updates)', () => {
+  interface Header {
+    id?: string;
+    brief?: { version: string; writtenBy: string | null; entriesSince: number; note?: string };
+    openTasks?: { id: string; title: string; assignee: string | null; assignedToYou: boolean }[];
+    briefChangedSinceYourLastLoad?: { by: string; lines?: string[]; note?: string };
+  }
+  async function session(title = 'Core') {
+    const client = await connect('user-1');
+    const id = parsed<{ id: string }>((await tool(client, 'create_session', { title })).texts).id;
+    return { client, id };
+  }
+  const header = (texts: string[]) => parsed<Header>(texts);
+  const savedId = (texts: string[]) => parsed<{ saved: string }>(texts).saved;
+
+  it('loads a session by its exact title, and asks for the ID when titles repeat', async () => {
+    const { client, id } = await session('Core');
+    await tool(client, 'save_to_session', { id, text: 'hello' });
+    const byTitle = await tool(client, 'load_session', { id: 'core' });
+    expect(byTitle.error).toBe(false);
+    expect(header(byTitle.texts).id).toBe(id);
+    expect(byTitle.texts[1]).toContain('hello');
+    // Another user's session with the same title stays out of reach.
+    await tool(await connect('user-2'), 'create_session', { title: 'Secret' });
+    expect((await tool(client, 'load_session', { id: 'Secret' })).error).toBe(true);
+    // Two of the user's own: name the IDs instead of guessing.
+    const other = parsed<{ id: string }>(
+      (await tool(client, 'create_session', { title: 'CORE' })).texts,
+    ).id;
+    const twice = await tool(client, 'load_session', { id: 'Core' });
+    expect(twice.error).toBe(true);
+    expect(twice.texts[0]).toContain(id);
+    expect(twice.texts[0]).toContain(other);
+  });
+
+  it('says how current the brief is and which assistant wrote the user’s own entries', async () => {
+    const { client, id } = await session();
+    const version = savedId(
+      (await tool(client, 'update_session_brief', { id, text: 'Goal: ship' })).texts,
+    );
+    await tool(client, 'save_to_session', { id, text: 'one' });
+    await tool(client, 'save_to_session', { id, text: 'two' });
+    const loaded = await tool(client, 'load_session', { id });
+    expect(header(loaded.texts).brief).toEqual(
+      expect.objectContaining({
+        version,
+        writtenBy: 'you',
+        entriesSince: 2,
+        note: expect.stringContaining('2 entries were saved after this brief') as unknown,
+      }),
+    );
+    // A brief with nothing after it carries no note.
+    await tool(client, 'update_session_brief', { id, text: 'Goal: ship\nDone: one, two' });
+    expect(header((await tool(client, 'load_session', { id })).texts).brief).not.toHaveProperty(
+      'note',
+    );
+    expect(loaded.texts[1]).toContain('written by you with assistant.example');
+  });
+
+  it('lists open tasks under the brief, without done ones', async () => {
+    const owner = await connect('user-1');
+    const id = parsed<{ id: string }>(
+      (await tool(owner, 'create_session', { title: 'T' })).texts,
+    ).id;
+    await env.DB.prepare(
+      "INSERT INTO profiles (uid, handle, created_at, updated_at) VALUES ('user-1', 'ada', 1, 1), ('user-2', 'bo', 1, 1)",
+    ).run();
+    await addMember(id, 'user-2', 'editor');
+    await tool(owner, 'save_to_session', {
+      id,
+      kind: 'task',
+      label: 'Open sign-up',
+      text: 'Long reasoning about LOGIN_LOCKED',
+      assignee: 'bo',
+    });
+    await tool(owner, 'save_to_session', { id, kind: 'task', text: 'Submit the listing\nDetails' });
+    const done = savedId(
+      (await tool(owner, 'save_to_session', { id, kind: 'task', text: 'Merge #16' })).texts,
+    );
+    await tool(owner, 'update_task', { id, entry: done, status: 'done' });
+    const tasks = header((await tool(owner, 'load_session', { id })).texts).openTasks;
+    expect(tasks?.map((t) => [t.title, t.assignee])).toEqual([
+      ['Submit the listing', null],
+      ['Open sign-up', 'bo'],
+    ]);
+  });
+
+  it('shows what another member changed in the brief since the user last loaded it', async () => {
+    const { client, id } = await session();
+    await addMember(id, 'user-2', 'editor');
+    const member = await connect('user-2');
+    await tool(member, 'update_session_brief', {
+      id,
+      text: 'Goal: list\nOpen: sign-up\nRisk: CPU',
+    });
+    // As if the first version was written at t=10 and user-1 loaded the session at t=20.
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE session_entries SET created_at = 10 WHERE session_id = ? AND kind = 'brief'",
+      ).bind(id),
+      env.DB.prepare(
+        "UPDATE session_members SET last_read_at = 20 WHERE session_id = ? AND uid = 'user-1'",
+      ).bind(id),
+    ]);
+    await tool(member, 'update_session_brief', {
+      id,
+      text: 'Goal: list\nOpen: reviewer account\nRisk: CPU',
+    });
+    const change = header(
+      (await tool(client, 'load_session', { id })).texts,
+    ).briefChangedSinceYourLastLoad;
+    expect(change?.lines).toEqual(['- Open: sign-up', '+ Open: reviewer account']);
+    // Seen now: the next load doesn't repeat it, and the user's own changes are never shown.
+    expect(
+      header((await tool(client, 'load_session', { id })).texts).briefChangedSinceYourLastLoad,
+    ).toBeUndefined();
+  });
+
+  it('refuses a brief update based on a version someone has replaced since', async () => {
+    const { client, id } = await session();
+    await addMember(id, 'user-2', 'editor');
+    // No brief yet: an empty basedOn means "there was none".
+    const first = await tool(client, 'update_session_brief', { id, text: 'v1', basedOn: '' });
+    expect(first.error).toBe(false);
+    const v1 = savedId(first.texts);
+    const theirs = await tool(await connect('user-2'), 'update_session_brief', {
+      id,
+      text: 'v2 by them',
+      basedOn: v1,
+    });
+    expect(theirs.error).toBe(false);
+    const v2 = savedId(theirs.texts);
+    const stale = await tool(client, 'update_session_brief', { id, text: 'v2 by me', basedOn: v1 });
+    expect(stale.error).toBe(true);
+    expect(stale.texts[0]).toContain(`now version ${v2}`);
+    expect(stale.texts[0]).toContain('by another member');
+    expect(await count('session_entries', "session_id = ? AND kind = 'brief'", id)).toBe(2);
+    // Merged on the current version, it saves; without basedOn, it always saves (as before).
+    expect(
+      (await tool(client, 'update_session_brief', { id, text: 'v3', basedOn: v2 })).error,
+    ).toBe(false);
+    expect((await tool(client, 'update_session_brief', { id, text: 'v4' })).error).toBe(false);
+    expect(
+      (await tool(client, 'update_session_brief', { id, text: 'v5', basedOn: '' })).error,
+    ).toBe(true);
+  });
+
+  it('diffs lines in order and gives up on very long texts', () => {
+    expect(diffLines('a\nb\nc', 'a\nc\nd')).toEqual(['- b', '+ d']);
+    expect(diffLines('same', 'same')).toEqual([]);
+    expect(diffLines('x\n'.repeat(500), 'y')).toEqual([]);
   });
 });

@@ -24,6 +24,7 @@ import {
   listSessions,
   loadSession,
   renameSession,
+  resolveSession,
   saveToSession,
   searchSession,
   updateBrief,
@@ -78,9 +79,21 @@ function promptResult(prompt: Prompt): Result {
   };
 }
 
+/** The assistant an entry was written with, as a person would name it: its host, or the website. */
+export function writtenWithName(clientId: string): string {
+  if (clientId === 'promptshare.cc') return 'on promptshare.cc';
+  try {
+    return `with ${new URL(clientId).host}`;
+  } catch {
+    return `with ${clientId.slice(0, 64)}`;
+  }
+}
+
 function entryText(entry: Entry): string {
   const head = `[${entry.kind === 'brief' ? 'BRIEF · ' : ''}${entry.kind !== 'brief' && entry.kind !== 'note' ? `${entry.kind} · ` : ''}${entry.createdAt}${entry.label ? ` · ${entry.label}` : ''} · id ${entry.id}${entry.replyTo ? ` · reply to ${entry.replyTo}` : ''}${entry.task ? ` · ${entry.task.status}${entry.task.assignedToYou ? ' · assigned to you' : entry.task.assignee ? ` · assigned to @${entry.task.assignee}` : ''}` : ''}]`;
-  if (entry.mine) return `${head} written by you\n${entry.text}`;
+  // Only on the caller's own entries: which assistant another member uses is theirs to tell.
+  if (entry.mine)
+    return `${head} written by you ${writtenWithName(entry.writtenWith)}\n${entry.text}`;
   const by = entry.author ? `@${entry.author}` : 'another member';
   return `${head} written by ${by}\n${untrusted('ENTRY BY ANOTHER MEMBER', entry.text)}`;
 }
@@ -382,9 +395,13 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Load a shared session',
       description:
-        'Reads a shared session: first its brief (the current state: goal, decisions, open questions, next steps), then its entries, newest first, each with its kind, when it was written and by whom: the user, or another member. `since` returns only entries newer than an entry ID; `before` reads further back; `kind` keeps one kind of entry.',
+        'Reads a shared session, named by its ID or its exact title: first its brief (the current state: goal, decisions, open questions, next steps), then its entries, newest first, each with its kind, when it was written and by whom. The summary at the top says how current the brief is (`brief.entriesSince`: entries saved after it, which it may not reflect yet), lists open tasks, and shows what another member changed in the brief since the user last loaded the session. When work in this conversation changes where things stand, offer the user an updated brief (update_session_brief with `basedOn`); save only what they agree to. `since` returns only entries newer than an entry ID; `before` reads further back; `kind` keeps one kind of entry.',
       inputSchema: z.object({
-        id,
+        id: z
+          .string()
+          .min(1)
+          .max(200)
+          .describe('The session’s ID, or its exact title (case doesn’t matter).'),
         since: z.string().max(64).optional().describe('Only entries newer than this entry ID.'),
         before: z.string().max(64).optional().describe('Only entries older than this entry ID.'),
         kind: z.enum(ENTRY_KINDS).optional().describe('Only entries of this kind.'),
@@ -408,7 +425,9 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
         kind?: EntryKind | undefined;
         status?: TaskStatus | undefined;
       }) => {
-        const session = await loadSession(db, secret, caller.uid, id, {
+        const sessionId = await resolveSession(db, caller.uid, id);
+        if (!sessionId) return fail('No shared session with that ID or title that you belong to.');
+        const session = await loadSession(db, secret, caller.uid, sessionId, {
           since,
           before,
           kind,
@@ -424,6 +443,36 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
             entries: session.entries.length,
             more: session.more,
             yourPreviousLoad: session.lastLoadedAt,
+            ...(sessionId !== id ? { id: sessionId } : {}),
+            ...(session.briefState
+              ? {
+                  brief: {
+                    ...session.briefState,
+                    ...(session.briefState.entriesSince > 0
+                      ? {
+                          note: `${String(session.briefState.entriesSince)} ${session.briefState.entriesSince === 1 ? 'entry was' : 'entries were'} saved after this brief. If they change where things stand, offer the user an updated brief.`,
+                        }
+                      : {}),
+                  },
+                }
+              : {}),
+            ...(session.openTasks?.length ? { openTasks: session.openTasks } : {}),
+            ...(session.briefChange
+              ? {
+                  briefChangedSinceYourLastLoad: {
+                    by: session.briefChange.by ? `@${session.briefChange.by}` : 'another member',
+                    ...(session.briefChange.isNew
+                      ? { note: 'There was no brief at your last load.' }
+                      : {
+                          lines: session.briefChange.lines,
+                          ...(session.briefChange.more ? { more: true } : {}),
+                          ...(session.briefChange.lines.length === 0
+                            ? { note: 'Too long to compare line by line; read the brief below.' }
+                            : {}),
+                        }),
+                  },
+                }
+              : {}),
           },
           null,
           2,
@@ -444,17 +493,46 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Update a session’s brief',
       description:
-        'Replaces the brief of a shared session: the one text that says where things stand (goal, decisions, open questions, next steps). Everyone in the session can read it. Earlier versions are kept, with who wrote them. In sessions with other members, text that looks like a password, key or token is refused.',
-      inputSchema: z.object({ id, text: z.string().max(16 * 1024) }),
+        'Replaces the brief of a shared session: the one text that says where things stand (goal, decisions, open questions, next steps). Everyone in the session can read it. Earlier versions are kept, with who wrote them. Pass `basedOn`: the `brief.version` from load_session (empty if there was no brief). If someone changed the brief since, nothing is saved and you are told to load and merge. In sessions with other members, text that looks like a password, key or token is refused.',
+      inputSchema: z.object({
+        id,
+        text: z.string().max(16 * 1024),
+        basedOn: z
+          .string()
+          .max(64)
+          .optional()
+          .describe(
+            'The brief version you read (`brief.version` in load_session); empty if there was none. Without it, the brief is replaced whatever happened since.',
+          ),
+      }),
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
       _meta: STATE_META,
     },
-    guarded(SCOPES.state, async ({ id, text: body }: { id: string; text: string }) => {
-      const brief = await updateBrief(db, secret, caller, now(), id, body);
-      if (!brief) return fail('No shared session with that ID that you belong to.');
-      await log('session.brief_updated', { session: id, entry: brief.id });
-      return await withConsentNote(json({ saved: brief.id, createdAt: brief.createdAt }));
-    }),
+    guarded(
+      SCOPES.state,
+      async ({
+        id,
+        text: body,
+        basedOn,
+      }: {
+        id: string;
+        text: string;
+        basedOn?: string | undefined;
+      }) => {
+        const brief = await updateBrief(
+          db,
+          secret,
+          caller,
+          now(),
+          id,
+          body,
+          basedOn === undefined ? undefined : basedOn.trim() || null,
+        );
+        if (!brief) return fail('No shared session with that ID that you belong to.');
+        await log('session.brief_updated', { session: id, entry: brief.id });
+        return await withConsentNote(json({ saved: brief.id, createdAt: brief.createdAt }));
+      },
+    ),
   );
 
   server.registerTool(

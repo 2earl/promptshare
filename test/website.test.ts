@@ -1243,6 +1243,37 @@ describe('sessions on the website (phase S2)', () => {
     expect((await get(`/sessions/${id}/brief`, (await signIn('user-3')).cookie)).status).toBe(404);
   });
 
+  it('keeps someone’s newer brief instead of saving over it, and keeps the user’s text', async () => {
+    const owner = (await signIn('user-1')).cookie;
+    const id = await newSession(owner);
+    await post(`/sessions/${id}/brief`, { brief: 'Goal: ship', basedOn: '' }, owner);
+    const page = await (await get(`/sessions/${id}`, owner)).text();
+    const version = /name="basedOn" value="([^"]+)"/.exec(page)?.[1] ?? '';
+    expect(version).not.toBe('');
+    await addMember(id, 'user-2', 'editor');
+    const member = (await signIn('user-2')).cookie;
+    expect(
+      (
+        await post(
+          `/sessions/${id}/brief`,
+          { brief: 'Goal: ship Friday', basedOn: version },
+          member,
+        )
+      ).status,
+    ).toBe(303);
+    const stale = await post(
+      `/sessions/${id}/brief`,
+      { brief: 'Goal: ship Monday', basedOn: version },
+      owner,
+    );
+    expect(stale.status).toBe(400);
+    const body = await stale.text();
+    expect(body).toContain('changed by another member while you were editing');
+    expect(body).toContain('Goal: ship Friday</pre>');
+    expect(body).toContain('Goal: ship Monday</textarea>');
+    expect(await count('session_entries', "session_id = ? AND kind = 'brief'", id)).toBe(2);
+  });
+
   it('adds entries with a kind and as replies, and shows what’s new', async () => {
     const owner = (await signIn('user-1')).cookie;
     const id = await newSession(owner);

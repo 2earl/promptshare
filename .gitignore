@@ -16,3 +16,7 @@ infra/*.tfstate.*
 infra/*.tfvars
 !infra/*.tfvars.example
 infra/crash.log
+
+# Python bytecode
+__pycache__/
+*.pyc

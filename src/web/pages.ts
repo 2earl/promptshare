@@ -139,9 +139,12 @@ export const TOOL_DOCS: { permission: string; tools: [string, string][] }[] = [
     tools: [
       ['list_sessions', 'Your sessions, with what’s new'],
       ['create_session', 'A new session, optionally starting from one of your prompts'],
-      ['load_session', 'The brief, then entries; only new ones, or one kind'],
+      ['load_session', 'By name or ID: the brief, open tasks, what changed, then entries'],
       ['save_to_session', 'Add a note, decision, question, task, summary or artifact'],
-      ['update_session_brief', 'Replace the brief; earlier versions stay'],
+      [
+        'update_session_brief',
+        'Replace the brief without overwriting a newer one; earlier versions stay',
+      ],
       ['update_task', 'Mark a task done, or assign it'],
       ['search_session', 'Find entries in one session'],
       ['rename_session', 'Rename a session you own'],
@@ -381,6 +384,8 @@ export interface SessionPage {
   role: string;
   brief: Entry | null;
   briefVersions: number;
+  /** Entries saved after the brief; absent when paging back. */
+  briefState?: { entriesSince: number } | null;
   entries: Entry[];
   more: boolean;
   members: Member[];
@@ -464,7 +469,11 @@ function briefSection(session: SessionPage, briefDraft: string, canWrite: boolea
 ${
   brief
     ? `<article class="entry${brief.mine ? '' : ' entry-other'}" id="brief">
-<header><span>${brief.mine ? 'You' : who(brief.author)} · ${esc(date(brief.createdAt))}${session.briefVersions > 1 ? ` · <a class="text-link" href="/sessions/${esc(session.id)}/brief">${String(session.briefVersions - 1)} earlier ${session.briefVersions === 2 ? 'version' : 'versions'}</a>` : ''}</span>
+<header><span>${brief.mine ? 'You' : who(brief.author)} · ${esc(date(brief.createdAt))}${
+        session.briefState?.entriesSince
+          ? ` · ${String(session.briefState.entriesSince)} ${session.briefState.entriesSince === 1 ? 'entry' : 'entries'} saved since`
+          : ''
+      }${session.briefVersions > 1 ? ` · <a class="text-link" href="/sessions/${esc(session.id)}/brief">${String(session.briefVersions - 1)} earlier ${session.briefVersions === 2 ? 'version' : 'versions'}</a>` : ''}</span>
 <span class="entry-actions">${brief.mine ? '' : reportLink(session.id, brief.id)}</span></header>
 <pre>${esc(brief.text)}</pre>
 </article>`
@@ -474,6 +483,7 @@ ${
   canWrite
     ? `<form class="form" method="post" action="/sessions/${esc(session.id)}/brief">
 <label for="brief-text">${brief ? 'Change the brief' : 'Write the brief'}</label>
+<input type="hidden" name="basedOn" value="${esc(brief?.id ?? '')}">
 <textarea id="brief-text" name="brief" rows="6" required class="mono" maxlength="${String(SESSION_LIMITS.brief)}">${esc(briefDraft)}</textarea>
 <p><button class="button button-quiet" type="submit">Save brief</button></p>
 </form>`

@@ -25,6 +25,12 @@ export const SESSION_LIMITS = {
    */
   scanBytes: 512 * 1024,
   searchResults: 20,
+  /** Open tasks listed under the brief on load; tasks over `taskPreviewBytes` show their label only. */
+  openTasks: 20,
+  taskPreviewBytes: 2 * 1024,
+  /** A brief change is shown line by line when both versions have at most this many lines. */
+  briefDiffLines: 400,
+  briefDiffShown: 40,
 } as const;
 
 export type TaskStatus = 'open' | 'done';
@@ -37,6 +43,18 @@ export type Role = 'owner' | 'editor' | 'viewer';
 
 export class SessionError extends Error {
   override name = 'SessionError';
+}
+
+/** A brief save refused because the brief changed since the writer read it. */
+export class BriefConflict extends SessionError {
+  override name = 'BriefConflict';
+  constructor(
+    message: string,
+    /** Who wrote the current version, as a phrase: " by @ada", " by you (…)", or empty. */
+    readonly by: string,
+  ) {
+    super(message);
+  }
 }
 
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
@@ -77,6 +95,33 @@ async function roleOf(db: D1Database, uid: string, sessionId: string): Promise<R
     .bind(sessionId, uid)
     .first<{ role: Role }>();
   return row?.role ?? null;
+}
+
+/**
+ * A session the caller belongs to, named by its ID or by its exact title (ignoring case), so
+ * "load my Core session" takes one call. Null when none matches; an error when several do.
+ */
+export async function resolveSession(
+  db: D1Database,
+  uid: string,
+  idOrTitle: string,
+): Promise<string | null> {
+  if (await roleOf(db, uid, idOrTitle)) return idOrTitle;
+  const { results } = await db
+    .prepare(
+      `SELECT s.id FROM session_members m JOIN shared_sessions s ON s.id = m.session_id
+       WHERE m.uid = ? AND s.title = ? COLLATE NOCASE ORDER BY s.updated_at DESC LIMIT 6`,
+    )
+    .bind(uid, idOrTitle.trim())
+    .all<{ id: string }>();
+  if (results.length > 1) {
+    throw new SessionError(
+      `Several of your sessions are called “${idOrTitle.trim()}”. Use one of these IDs: ${results
+        .map((r) => r.id)
+        .join(', ')}.`,
+    );
+  }
+  return results[0]?.id ?? null;
 }
 
 export async function listSessions(db: D1Database, uid: string): Promise<SessionSummary[]> {
@@ -266,6 +311,43 @@ export interface LoadedSession {
   more: boolean;
   /** When the caller last loaded the newest entries before this load. */
   lastLoadedAt: string | null;
+  /**
+   * How current the brief is: entries saved after it are things it may not reflect yet.
+   * Null when there is no brief or when paging back.
+   */
+  briefState: BriefState | null;
+  /** Open tasks, newest first; null when paging back. */
+  openTasks: OpenTask[] | null;
+  /** Someone else changed the brief since the caller last loaded the session. */
+  briefChange: BriefChange | null;
+}
+
+export interface BriefState {
+  /** Pass as `basedOn` when updating the brief, so a newer version isn't overwritten. */
+  version: string;
+  writtenAt: string;
+  /** `you`, a member's handle, or null for a member without one. */
+  writtenBy: string | null;
+  /** Non-brief entries saved after this version. */
+  entriesSince: number;
+}
+
+export interface OpenTask {
+  id: string;
+  /** The label, or the first line of the text; empty when the task is too long to preview. */
+  title: string;
+  assignee: string | null;
+  assignedToYou: boolean;
+}
+
+export interface BriefChange {
+  by: string | null;
+  /** True when there was no brief at the caller's last load. */
+  isNew: boolean;
+  /** `+ line` added, `- line` removed; empty when the versions are too long to compare. */
+  lines: string[];
+  /** More changed lines than shown. */
+  more: boolean;
 }
 
 export async function loadSession(
@@ -322,6 +404,14 @@ export async function loadSession(
   }
 
   const current = await currentBrief(db, secret, uid, sessionId);
+  const paging = Boolean(options.before);
+  const briefState =
+    current.brief && !paging ? await stateOf(db, sessionId, current.brief, current.position) : null;
+  const openTasks = paging ? null : await openTasksOf(db, secret, uid, sessionId);
+  const briefChange =
+    current.brief && !paging && !current.brief.mine && member.last_read_at !== null
+      ? await changeSince(db, secret, uid, sessionId, current, member.last_read_at)
+      : null;
 
   // Loading the newest entries (not paging back) means the caller has seen what's new.
   if (options.markReadAt !== undefined && !options.before) {
@@ -338,29 +428,173 @@ export async function loadSession(
     entries,
     more,
     lastLoadedAt: member.last_read_at === null ? null : iso(member.last_read_at),
+    briefState,
+    openTasks,
+    briefChange,
   };
 }
 
-/** The newest brief not removed, and how many versions there are. Callers check membership. */
+async function stateOf(
+  db: D1Database,
+  sessionId: string,
+  brief: Entry,
+  position: number,
+): Promise<BriefState> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM session_entries
+       WHERE session_id = ? AND kind <> 'brief' AND removed_at IS NULL AND rowid > ?`,
+    )
+    .bind(sessionId, position)
+    .first<{ n: number }>();
+  return {
+    version: brief.id,
+    writtenAt: brief.createdAt,
+    writtenBy: brief.mine ? 'you' : brief.author,
+    entriesSince: row?.n ?? 0,
+  };
+}
+
+/** Open tasks with a one-line title. Long tasks without a label aren't decrypted (CPU budget). */
+async function openTasksOf(
+  db: D1Database,
+  secret: string,
+  uid: string,
+  sessionId: string,
+): Promise<OpenTask[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT ${ENTRY_COLUMNS}
+       ${ENTRY_FROM}
+       WHERE e.session_id = ? AND e.kind = 'task' AND e.removed_at IS NULL
+         AND COALESCE(e.task_status, 'open') = 'open'
+       ORDER BY e.rowid DESC LIMIT ?`,
+    )
+    .bind(sessionId, SESSION_LIMITS.openTasks)
+    .all<EntryRow>();
+  const tasks: OpenTask[] = [];
+  for (const row of results) {
+    let title = row.label;
+    if (!title && row.size <= SESSION_LIMITS.taskPreviewBytes) {
+      const entry = await toEntry(secret, sessionId, uid, row);
+      title = firstLine(entry.text);
+    }
+    tasks.push({
+      id: row.id,
+      title,
+      assignee: row.assignee,
+      assignedToYou: row.assignee_uid === uid,
+    });
+  }
+  return tasks;
+}
+
+function firstLine(text: string, max = 120): string {
+  const line = text.trim().split('\n', 1)[0]?.trim() ?? '';
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/**
+ * What changed in the brief since the caller last loaded the session: the current version
+ * against the newest one saved by then. Callers pass a brief someone else wrote.
+ */
+async function changeSince(
+  db: D1Database,
+  secret: string,
+  uid: string,
+  sessionId: string,
+  current: { brief: Entry | null; position: number },
+  lastReadAt: number,
+): Promise<BriefChange | null> {
+  const brief = current.brief;
+  if (!brief || Date.parse(brief.createdAt) / 1000 <= lastReadAt) return null;
+  const by = brief.author;
+  const row = await db
+    .prepare(
+      `SELECT ${ENTRY_COLUMNS}
+       ${ENTRY_FROM}
+       WHERE e.session_id = ? AND e.kind = 'brief' AND e.removed_at IS NULL
+         AND e.created_at <= ? AND e.rowid < ?
+       ORDER BY e.rowid DESC LIMIT 1`,
+    )
+    .bind(sessionId, lastReadAt, current.position)
+    .first<EntryRow>();
+  if (!row) return { by, isNew: true, lines: [], more: false };
+  const earlier = await toEntry(secret, sessionId, uid, row);
+  const changed = diffLines(earlier.text, brief.text);
+  return {
+    by,
+    isNew: false,
+    lines: changed.slice(0, SESSION_LIMITS.briefDiffShown),
+    more: changed.length > SESSION_LIMITS.briefDiffShown,
+  };
+}
+
+/**
+ * Lines removed (`- `) and added (`+ `), in order, from a longest-common-subsequence diff.
+ * Empty when either text has more than `briefDiffLines` lines: a 16 KB brief stays well inside
+ * the CPU budget, a pathological one isn't compared.
+ */
+export function diffLines(before: string, after: string): string[] {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  if (a.length > SESSION_LIMITS.briefDiffLines || b.length > SESSION_LIMITS.briefDiffLines)
+    return [];
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const lcs = new Uint16Array(rows * cols);
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      lcs[i * cols + j] =
+        a[i] === b[j]
+          ? (lcs[(i + 1) * cols + j + 1] ?? 0) + 1
+          : Math.max(lcs[(i + 1) * cols + j] ?? 0, lcs[i * cols + j + 1] ?? 0);
+    }
+  }
+  const out: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) {
+      i++;
+      j++;
+    } else if (
+      i < a.length &&
+      (j === b.length || (lcs[(i + 1) * cols + j] ?? 0) >= (lcs[i * cols + j + 1] ?? 0))
+    ) {
+      // Removals first, so a changed line reads as "- old" then "+ new".
+      if (a[i]?.trim()) out.push(`- ${a[i] ?? ''}`);
+      i++;
+    } else {
+      if (b[j]?.trim()) out.push(`+ ${b[j] ?? ''}`);
+      j++;
+    }
+  }
+  return out;
+}
+
+/** The newest brief not removed, its insertion position, and how many versions there are. Callers check membership. */
 async function currentBrief(
   db: D1Database,
   secret: string,
   uid: string,
   sessionId: string,
-): Promise<{ brief: Entry | null; versions: number }> {
+): Promise<{ brief: Entry | null; versions: number; position: number }> {
   const row = await db
     .prepare(
-      `SELECT ${ENTRY_COLUMNS}, (SELECT COUNT(*) FROM session_entries b
-                                 WHERE b.session_id = ?1 AND b.kind = 'brief' AND b.removed_at IS NULL) AS versions
+      `SELECT ${ENTRY_COLUMNS}, e.rowid AS position,
+              (SELECT COUNT(*) FROM session_entries b
+                 WHERE b.session_id = ?1 AND b.kind = 'brief' AND b.removed_at IS NULL) AS versions
        ${ENTRY_FROM}
        WHERE e.session_id = ?1 AND e.kind = 'brief' AND e.removed_at IS NULL
        ORDER BY e.rowid DESC LIMIT 1`,
     )
     .bind(sessionId)
-    .first<EntryRow & { versions: number }>();
+    .first<EntryRow & { versions: number; position: number }>();
   return {
     brief: row ? await toEntry(secret, sessionId, uid, row) : null,
     versions: row?.versions ?? 0,
+    position: row?.position ?? 0,
   };
 }
 
@@ -398,6 +632,11 @@ async function addEntry(
     kind: EntryKind | 'brief';
     replyTo: string | null;
     assignee?: string | undefined;
+    /**
+     * For a brief: the version the writer read, or null for "there was none". The new version
+     * is saved only if that is still the current one. Undefined skips the check.
+     */
+    basedOn?: string | null | undefined;
   },
 ): Promise<Entry | null> {
   const role = await roleOf(db, caller.uid, sessionId);
@@ -457,11 +696,16 @@ async function addEntry(
 
   const id = crypto.randomUUID();
   const { iv, ciphertext } = await encryptEntry(secret, sessionId, id, text);
+  const guarded = fields.kind === 'brief' && fields.basedOn !== undefined;
+  // With `basedOn`, the insert happens only if the current brief is still that version. The
+  // check and the insert are one statement, so two writers can't both pass it.
   const statements = [
     db
       .prepare(
         `INSERT INTO session_entries (id, session_id, author_uid, client_id, kind, reply_to, label, iv, ciphertext, size, created_at, task_status, assignee_uid)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
+         WHERE ?14 = 0 OR (SELECT id FROM session_entries WHERE session_id = ?2 AND kind = 'brief'
+                             AND removed_at IS NULL ORDER BY rowid DESC LIMIT 1) IS ?15`,
       )
       .bind(
         id,
@@ -477,8 +721,14 @@ async function addEntry(
         now,
         fields.kind === 'task' ? 'open' : null,
         assignee?.uid ?? null,
+        guarded ? 1 : 0,
+        fields.basedOn ?? null,
       ),
-    db.prepare('UPDATE shared_sessions SET updated_at = ? WHERE id = ?').bind(now, sessionId),
+    db
+      .prepare(
+        'UPDATE shared_sessions SET updated_at = ?1 WHERE id = ?2 AND EXISTS (SELECT 1 FROM session_entries WHERE id = ?3)',
+      )
+      .bind(now, sessionId, id),
   ];
   if (fields.kind === 'brief') {
     // Keeps the newest versions; one removed by moderation stays as evidence (LEGAL.md §4).
@@ -492,7 +742,31 @@ async function addEntry(
         .bind(sessionId, SESSION_LIMITS.briefVersions),
     );
   }
-  await db.batch(statements);
+  const [inserted] = await db.batch(statements);
+  if (guarded && inserted?.meta.changes === 0) {
+    const current = await db
+      .prepare(
+        `SELECT e.id, e.author_uid, pr.handle FROM session_entries e
+         LEFT JOIN profiles pr ON pr.uid = e.author_uid
+         WHERE e.session_id = ? AND e.kind = 'brief' AND e.removed_at IS NULL
+         ORDER BY e.rowid DESC LIMIT 1`,
+      )
+      .bind(sessionId)
+      .first<{ id: string; author_uid: string; handle: string | null }>();
+    const by = !current
+      ? ''
+      : current.author_uid === caller.uid
+        ? ' by you (perhaps in another chat)'
+        : current.handle
+          ? ` by @${current.handle}`
+          : ' by another member';
+    throw new BriefConflict(
+      current
+        ? `Not saved: the brief changed since you read it (now version ${current.id}${by}). Load the session again, merge your changes into that version, and save with basedOn ${current.id}.`
+        : 'Not saved: the brief you read has since been removed. Load the session again and save with an empty basedOn.',
+      by,
+    );
+  }
   return {
     id,
     kind: fields.kind,
@@ -549,11 +823,14 @@ export async function updateBrief(
   now: number,
   sessionId: string,
   text: string,
+  /** The version the writer read (null: there was none); undefined saves unconditionally. */
+  basedOn?: string | null,
 ): Promise<Entry | null> {
   return addEntry(db, secret, caller, now, sessionId, text, {
     label: '',
     kind: 'brief',
     replyTo: null,
+    basedOn,
   });
 }
 
