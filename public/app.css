@@ -558,3 +558,24 @@ select {
 .preview .prompt-body {
   padding: 0;
 }
+
+/* ---- Moderation ------------------------------------------------------------------------------- */
+
+.details {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1.25rem;
+  max-width: 48rem;
+}
+.details dt {
+  color: var(--muted);
+}
+.details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.entry-actions {
+  display: flex;
+  gap: 1rem;
+  align-items: baseline;
+}

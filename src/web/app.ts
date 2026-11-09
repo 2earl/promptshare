@@ -1,4 +1,18 @@
 import { Hono } from 'hono';
+import {
+  ModerationError,
+  closeMessage,
+  contentOfDecision,
+  decide,
+  decisionAbout,
+  decisionById,
+  decisionForMessage,
+  decisionsAbout,
+  getMessage,
+  listMessages,
+  resolveContent,
+  type Action,
+} from '../moderation';
 import { ProfileError, handleOf, setHandle } from '../profiles';
 import {
   PromptError,
@@ -129,8 +143,11 @@ export function createApp(now: () => number) {
       );
     }
     const returnTo = safeReturnTo(c.req.query('return'));
-    if (c.get('session')) return c.redirect(returnTo ?? '/prompts', 302);
-    const { cookieValue, location } = await startSignIn(c.env, c.get('now'), returnTo);
+    const secondFactor = c.req.query('admin') === '1';
+    if (c.get('session') && !secondFactor) return c.redirect(returnTo ?? '/prompts', 302);
+    const { cookieValue, location } = await startSignIn(c.env, c.get('now'), returnTo, {
+      secondFactor,
+    });
     setCookie(c, SIGNIN_COOKIE, cookieValue, SIGNIN_TTL_SECONDS);
     return c.redirect(location, 302);
   });
@@ -145,13 +162,16 @@ export function createApp(now: () => number) {
       );
     }
     try {
-      const { uid, returnTo } = await finishSignIn(c.env, c.get('now'), {
+      const { uid, aal2At, returnTo } = await finishSignIn(c.env, c.get('now'), {
         cookieValue: readCookie(c.req.header('Cookie'), SIGNIN_COOKIE),
         state: c.req.query('state') ?? null,
         code: c.req.query('code') ?? null,
         iss: c.req.query('iss') ?? null,
       });
-      const cookieValue = await createWebSession(c.env, c.get('now'), uid);
+      // A new sign-in replaces the old session (e.g. signing in again for moderation).
+      const previous = c.get('session');
+      if (previous) await endWebSession(c.env, previous);
+      const cookieValue = await createWebSession(c.env, c.get('now'), uid, aal2At);
       setCookie(c, SESSION_COOKIE, cookieValue, SESSION_ABSOLUTE_SECONDS);
       return c.redirect(safeReturnTo(returnTo) ?? '/prompts', 302);
     } catch (error) {
@@ -175,7 +195,10 @@ export function createApp(now: () => number) {
   app.get('/account', async (c) => {
     const uid = requireUser(c);
     if (typeof uid !== 'string') return uid;
-    return html(c, pages.accountPage(await handleOf(c.env.DB, uid)));
+    return html(
+      c,
+      pages.accountPage(await handleOf(c.env.DB, uid), await decisionsAbout(c.env.DB, uid)),
+    );
   });
 
   // ---- Prompts ----------------------------------------------------------------------------------
@@ -621,6 +644,149 @@ export function createApp(now: () => number) {
       if (!(error instanceof PromptError)) throw error;
       return html(c, pages.problem(viewer(c), 'Not made public', error.message), 400);
     }
+  });
+
+  // ---- Statements of reasons and contesting them ----------------------------------------------
+
+  async function alreadyContested(c: AppContext, uid: string, decisionId: string) {
+    const row = await c.env.DB.prepare(
+      "SELECT 1 AS yes FROM messages WHERE kind = 'appeal' AND uid = ? AND decision_id = ?",
+    )
+      .bind(uid, decisionId)
+      .first<{ yes: number }>();
+    return row !== null;
+  }
+
+  app.get('/decisions/:id', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const decision = await decisionAbout(c.env.DB, uid, c.req.param('id'));
+    if (!decision) return notFound(c, 'decision');
+    return html(c, pages.decisionPage(decision, await alreadyContested(c, uid, decision.id)));
+  });
+
+  app.post('/decisions/:id/contest', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const decision = await decisionAbout(c.env.DB, uid, c.req.param('id'));
+    if (!decision) return notFound(c, 'decision');
+    if (await alreadyContested(c, uid, decision.id))
+      return c.redirect(`/decisions/${decision.id}`, 303);
+    const body = text((await c.req.parseBody()).body).slice(0, 10_000);
+    if (!body.trim()) return html(c, pages.decisionPage(decision, false), 400);
+    const message = { kind: 'appeal' as const, name: '', email: '', body };
+    const id = await storeMessage(c.env.DB, c.get('now'), {
+      ...message,
+      uid,
+      decisionId: decision.id,
+    });
+    c.executionCtx.waitUntil(notifyOwner(c.env, c.get('now'), id, message));
+    return c.redirect(`/decisions/${decision.id}`, 303);
+  });
+
+  // ---- Moderation: the owner only, after a second factor verified through login ------------
+
+  /** Moderation needs the owner's account and a second factor verified in the last 15 minutes. */
+  const ADMIN_FRESHNESS_SECONDS = 15 * 60;
+  function requireOwner(c: AppContext): true | Response {
+    const session = c.get('session');
+    if (!session || session.uid !== c.env.OWNER_UID) {
+      if (!session)
+        return c.redirect(`/signin?admin=1&return=${encodeURIComponent(c.req.path)}`, 302);
+      return notFound(c);
+    }
+    if (session.aal2At === null || c.get('now') - session.aal2At > ADMIN_FRESHNESS_SECONDS) {
+      if (c.req.method !== 'GET') return notFound(c);
+      return c.redirect(`/signin?admin=1&return=${encodeURIComponent(c.req.path)}`, 302);
+    }
+    return true;
+  }
+
+  const emptyDecision = { action: '', ground: '', law: '', explanation: '', suspendDays: '' };
+
+  async function showMessage(
+    c: AppContext,
+    id: string,
+    form = emptyDecision,
+    error: string | null = null,
+  ) {
+    const message = await getMessage(c.env.DB, id);
+    if (!message) return notFound(c);
+    const contested = message.decisionId ? await decisionById(c.env.DB, message.decisionId) : null;
+    const content = contested
+      ? await contentOfDecision(c.env.DB, c.env.STATE_ENCRYPTION_KEY, c.env.SITE_ORIGIN, contested)
+      : await resolveContent(
+          c.env.DB,
+          c.env.STATE_ENCRYPTION_KEY,
+          c.env.SITE_ORIGIN,
+          message.contentUrl,
+        );
+    const decision = await decisionForMessage(c.env.DB, message.id);
+    return html(
+      c,
+      pages.adminMessage(message, content, decision, contested, form, error),
+      error ? 400 : 200,
+    );
+  }
+
+  app.get('/admin', async (c) => {
+    const owner = requireOwner(c);
+    if (owner !== true) return owner;
+    const open = c.req.query('closed') !== '1';
+    return html(c, pages.adminList(await listMessages(c.env.DB, open), open));
+  });
+
+  app.get('/admin/messages/:id', async (c) => {
+    const owner = requireOwner(c);
+    if (owner !== true) return owner;
+    return showMessage(c, c.req.param('id'));
+  });
+
+  app.post('/admin/messages/:id/decide', async (c) => {
+    const owner = requireOwner(c);
+    if (owner !== true) return owner;
+    const id = c.req.param('id');
+    const message = await getMessage(c.env.DB, id);
+    if (!message || message.kind === 'contact' || message.closedAt !== null) return notFound(c);
+    const raw = await c.req.parseBody();
+    const form = {
+      action: text(raw.action),
+      ground: text(raw.ground),
+      law: text(raw.law),
+      explanation: text(raw.explanation),
+      suspendDays: text(raw.suspendDays),
+    };
+    const contested = message.decisionId ? await decisionById(c.env.DB, message.decisionId) : null;
+    const content = contested
+      ? await contentOfDecision(c.env.DB, c.env.STATE_ENCRYPTION_KEY, c.env.SITE_ORIGIN, contested)
+      : await resolveContent(
+          c.env.DB,
+          c.env.STATE_ENCRYPTION_KEY,
+          c.env.SITE_ORIGIN,
+          message.contentUrl,
+        );
+    try {
+      await decide(c.env.DB, c.get('now'), {
+        messageId: id,
+        content,
+        action: form.action as Action,
+        ground: form.ground === 'illegal' || form.ground === 'terms' ? form.ground : null,
+        law: form.law,
+        explanation: form.explanation,
+        suspendDays: Number.parseInt(form.suspendDays, 10),
+      });
+      return c.redirect(`/admin/messages/${id}`, 303);
+    } catch (error) {
+      if (!(error instanceof ModerationError)) throw error;
+      return showMessage(c, id, form, error.message);
+    }
+  });
+
+  app.post('/admin/messages/:id/close', async (c) => {
+    const owner = requireOwner(c);
+    if (owner !== true) return owner;
+    await closeMessage(c.env.DB, c.get('now'), c.req.param('id'));
+    return c.redirect('/admin', 303);
   });
 
   // ---- Contact and reports ------------------------------------------------------------------

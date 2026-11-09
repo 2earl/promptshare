@@ -36,7 +36,9 @@ assistant path is the gateway's
 | An invitation link leaks | Single use; the owner sees who joined and can remove them and revoke unused links | Tests |
 | User enumeration | No directory or search of users; handles appear only on public prompts | Review |
 | Abuse of the report form (spam, fake reports) | Rate limits per network; no account needed by law, so reports are queued, never acted on automatically | Tests |
-| Unlawful public content | Notice and action, statements of reasons, Art. 18 procedure (LEGAL.md) | Browser test of the report → decision path |
+| Unlawful public content | Notice and action, statements of reasons, Art. 18 procedure (LEGAL.md) | Tests: report → decision → statement → contest → reversal |
+| Someone else uses the moderation view | Only `OWNER_UID`, and only with a second factor verified through login in the last 15 minutes; 404 for everyone else; forms refuse a stale second factor | Tests; each check broken on purpose is caught |
+| Reading another user's statement of reasons | Decisions are looked up by ID and the affected user together | Test |
 | Size and cost abuse | Limits per prompt, entry, session and user (DESIGN §5); gateway rate limit | Tests |
 | Data left after account deletion | `AccountEvents.deleteUser`, retried by login | Tests |
 | XSS through prompt or entry text on the website | Output escaped; CSP `default-src 'none'`, no scripts at all; text never rendered as HTML | Rendering and header tests |

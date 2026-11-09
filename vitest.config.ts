@@ -15,6 +15,7 @@ export default defineConfig(async () => {
             // Test-only value for the Worker secret declared in wrangler.jsonc.
             STATE_ENCRYPTION_KEY: 'test-state-encryption-key-of-at-least-32-chars',
             SESSION_PEPPER: 'test-session-pepper',
+            OWNER_UID: 'owner-uid',
           },
           // Stand-in for login (the AUTH_SERVER binding): a token endpoint that checks PKCE, and
           // validateToken. A code is "<uid>.<code_challenge>", so the stand-in can verify the
@@ -46,8 +47,11 @@ export default defineConfig(async () => {
                   }
                   async validateToken(resource, token) {
                     if (!token.startsWith('token-')) return null;
+                    // "<uid>!aal2": a sign-in where login verified the second factor a minute ago.
+                    const [uid, aal2] = token.slice(6).split('!');
                     return { audience: resource, scope: ['promptshare:account'],
-                      props: { uid: token.slice(6), authTime: 0 } };
+                      props: { uid, authTime: 0,
+                        aal2At: aal2 === 'aal2' ? Math.floor(Date.now() / 1000) - 60 : null } };
                   }
                 }
               `,

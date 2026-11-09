@@ -35,8 +35,8 @@ Facts it relies on:
 | 15 | Yearly transparency report | **No:** micro and small enterprises are exempt (Art. 15(2)) | Records kept anyway, so it can start if the exemption ends |
 | 16 | Notice and action: an easy electronic way for **anyone** to report illegal content | Yes | DESIGN §8: report link and public form |
 | 16(2) | The form collects the exact URL, a substantiated explanation, the reporter's name and email (not required for child sexual abuse offences), and a good-faith statement | Yes | Report form fields |
-| 16(4)–(6) | Confirm receipt; decide timely, diligently and objectively; tell the reporter the decision and the redress options; say whether automated means were used | Yes | Emails to reporters who give an address; decisions by a person, no automated moderation |
-| 17 | A statement of reasons to the affected user for every restriction: what, how long, facts, notice-based or not, automation, legal or contractual ground, redress | Yes | `moderation_decisions` → shown on the content's page and in the account |
+| 16(4)–(6) | Confirm receipt; decide timely, diligently and objectively; tell the reporter the decision and the redress options; say whether automated means were used | Yes | Receipt: the confirmation page with a reference. Decision: the moderation view prepares the email to the reporter, which the owner sends from their own mailbox (the free Workers plan can't email arbitrary addresses). Decisions by a person; no automated moderation |
+| 17 | A statement of reasons to the affected user for every restriction: what, how long, facts, notice-based or not, automation, legal or contractual ground, redress | Yes | `moderation_decisions` → listed on the account page, each at `/decisions/:id` with every Art. 17(3) element and a contest form |
 | 18 | Report suspected crimes threatening someone's life or safety to the authorities | Yes | §3 |
 | 20–28 | Online-platform duties: internal complaint system, out-of-court settlement, trusted flaggers, misuse measures, interface transparency, statements to the Commission's database | **No** for micro and small enterprises (Art. 19), except Art. 24(3): give user numbers on request | A contest link anyway (DESIGN §8), as good practice |
 
@@ -50,8 +50,8 @@ or safety:
 3. where the country concerned is unclear: the authorities in Germany (where Prompt share is
    established), or Europol.
 
-The moderation view has a "threat to life or safety" decision. It keeps the content as evidence
-and shows this procedure.
+The moderation view has a "threat to life or safety" decision. It removes the content from view,
+keeps it as evidence (retention never deletes it), and shows this procedure.
 
 ## 4. Records and retention
 

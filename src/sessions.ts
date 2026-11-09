@@ -153,7 +153,8 @@ export async function loadSession(
       `SELECT e.id, e.author_uid, e.client_id, e.label, e.iv, e.ciphertext, e.size, e.created_at,
               pr.handle AS author
        FROM session_entries e LEFT JOIN profiles pr ON pr.uid = e.author_uid
-       WHERE e.session_id = ? AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))
+       WHERE e.session_id = ? AND e.removed_at IS NULL
+         AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))
        ORDER BY e.created_at DESC, e.id DESC LIMIT ?`,
     )
     .bind(sessionId, cutoff, cutoff, cutoffId || '￿', SESSION_LIMITS.loadEntries + 1)

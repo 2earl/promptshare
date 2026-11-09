@@ -22,6 +22,10 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
     db.prepare('DELETE FROM prompts WHERE owner_uid = ?').bind(uid),
     db.prepare('DELETE FROM web_sessions WHERE uid = ?').bind(uid),
     db.prepare('DELETE FROM profiles WHERE uid = ?').bind(uid),
+    // Statements of reasons stay for their retention period (LEGAL.md §4), no longer saying who.
+    db
+      .prepare('UPDATE moderation_decisions SET affected_uid = NULL WHERE affected_uid = ?')
+      .bind(uid),
     db.prepare('DELETE FROM invitations WHERE created_by = ?').bind(uid),
     db.prepare('UPDATE invitations SET used_by = NULL WHERE used_by = ?').bind(uid),
     // Messages and reports stay for their retention period (LEGAL.md §4), no longer saying who.
@@ -39,6 +43,7 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
             + (SELECT COUNT(*) FROM audit_events WHERE actor_user_id = ?1)
             + (SELECT COUNT(*) FROM web_sessions WHERE uid = ?1)
             + (SELECT COUNT(*) FROM profiles WHERE uid = ?1)
+            + (SELECT COUNT(*) FROM moderation_decisions WHERE affected_uid = ?1)
             + (SELECT COUNT(*) FROM invitations WHERE created_by = ?1 OR used_by = ?1)
             + (SELECT COUNT(*) FROM messages WHERE uid = ?1) AS n`,
     )
@@ -154,6 +159,15 @@ export async function exportUserData(
       text: row.body,
       sentAt: iso(row.created_at as number),
     })),
+    moderationDecisions: (
+      await db
+        .prepare(
+          `SELECT created_at, content_type, content_title, action, ground, law, explanation, until_at
+           FROM moderation_decisions WHERE affected_uid = ? ORDER BY created_at`,
+        )
+        .bind(uid)
+        .all()
+    ).results,
     notes: [
       'sessionEntries has every entry in the sessions you own, and the entries you wrote in other people’s sessions.',
       'Other members are not named: Prompt share shows you only what you can already see.',

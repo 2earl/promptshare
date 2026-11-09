@@ -308,6 +308,15 @@ export async function publishPrompt(
   const prompt = await getPrompt(db, uid, id);
   if (!prompt?.mine) return null;
   if (!prompt.author) throw new PublishError('Choose a handle first: it is shown as the author.');
+  const suspended = await db
+    .prepare('SELECT publishing_suspended_until AS until FROM profiles WHERE uid = ?')
+    .bind(uid)
+    .first<{ until: number | null }>();
+  if (suspended?.until && suspended.until > now) {
+    throw new PublishError(
+      `Moderation suspended your publishing until ${new Date(suspended.until * 1000).toISOString().slice(0, 10)}. See your account page for the reasons.`,
+    );
+  }
   if (prompt.status !== 'active') {
     throw new PublishError('This prompt was restricted by moderation and can’t be made public.');
   }
