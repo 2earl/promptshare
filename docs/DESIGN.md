@@ -151,6 +151,23 @@ the public (LEGAL.md §1). Recipients can report it like a session entry.
 - an author's shares go with their prompts;
 - a recipient's shares are deleted.
 
+### 4.2 Variables (phase P4)
+
+Most saved prompts are templates: the same instructions around a part that changes ("release
+notes for {{diff}}"). Without help, the assistant gets the placeholder text and has to guess.
+
+- A variable is `{{name}}`, or `{{name=default}}` with a default. Names are letters, digits, `_`
+  and `-`, starting with a letter; a default has no braces or line breaks and at most 200
+  characters. Anything else between braces (code, other template languages) is left alone.
+- Every prompt result has `variables`, worked out from the body. Nothing new is stored.
+- `get_prompt` takes `fill`: values by name, at most 20, 8 KB each. The result is the body with
+  the values inserted as given, defaults for the rest, and `unfilled` for variables that are still
+  open. The values are used for that one answer and never stored. The tool description asks the
+  assistant to take values from the conversation or ask the user.
+- Someone else's prompt stays wrapped as theirs after filling (THREAT_MODEL.md): the user's values
+  are inside text another user wrote.
+- The website shows the variables under a prompt, and the editor says how to write them.
+
 ## 5. Shared sessions
 
 A shared session has a title, an owner and members. Its content is a list of **entries** that
@@ -247,6 +264,10 @@ second assistant updating it would have replaced the first one's version without
 | Two writers of the brief silently overwrite each other | `update_session_brief` takes `basedOn`, the version that was read (empty: there was none). The check and the insert are one SQL statement, so two writers can't both pass. Without `basedOn` it saves as before. The website's form always sends it, and on a conflict shows the newer version with the user's text still in the box |
 | An entry doesn't say which assistant wrote it | The user's own entries say "written by you with claude.ai" (the client ID's host, or "on promptshare.cc"). Other members' entries don't: which assistant someone uses is theirs to tell. The client ID was already stored (§7); nothing new is stored |
 
+**Resuming a long session** (phase P4): `load_session` takes `since: "brief"`, the entries saved
+after the current brief (all of them if there is none). The brief summarises everything before it,
+so this is the brief plus what it may not cover yet, without paging through the rest.
+
 Considered and not done:
 - **Summaries written by a model on the server.** A new processor of session content, cost, and
   CPU; the assistant reading the session can summarise it.
@@ -261,7 +282,7 @@ trust: 'first-party' }`. Tools appear to assistants as `promptshare__<tool>`.
 | Tool | Does | Permission |
 |---|---|---|
 | `search_prompts` | Search your prompts, prompts shared with you, and public prompts | `mcp:promptshare.read` |
-| `get_prompt` | One prompt, by ID | `read` |
+| `get_prompt` | One prompt, by ID; with `fill`, its variables filled in (§4.2) | `read` |
 | `save_prompt` | Create a private prompt | `mcp:promptshare.write` |
 | `update_prompt` | Change your prompt (a public one stays public; the change is visible at once) | `write` |
 | `unpublish_prompt` | Make your public prompt private | `write` |
@@ -414,6 +435,7 @@ login's "Download your data" includes it.
 | S2 | Sessions: brief with history, `since` and new-entry counts, entry kinds, replies, renaming, starting from a prompt (§5.1) | Built |
 | S3 | Sessions: search within a session, tasks with status and assignee, Markdown export (§5.1) | Built |
 | S4 | Sessions: load by title, brief freshness, open tasks and brief changes on load, brief updates that can't overwrite a newer version (§5.2) | Built |
+| P4 | Prompt variables with defaults, filled by `get_prompt` (§4.2); resuming a session from its brief (`since: "brief"`, §5.2) | Built |
 | P3 | MCP prompts primitive through the gateway; prompt versions | |
 
 Public prompts can't exist before C2, because publishing is a website action. So nothing public

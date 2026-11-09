@@ -15,6 +15,9 @@ export const PROMPT_LIMITS = {
   modelLength: 60,
   perUser: 2_000,
   searchResults: 20,
+  /** Values given to fill a prompt's variables (§4.2). */
+  fillValues: 20,
+  fillValue: 8 * 1024,
 } as const;
 
 export interface PromptInput {
@@ -64,11 +67,75 @@ export interface Prompt {
   sharedWithYou: boolean;
   /** Your own prompt: how many people you shared it with. */
   shareCount: number;
+  /** Placeholders in the body, `{{name}}` or `{{name=default}}`, in order of first use (§4.2). */
+  variables: PromptVariable[];
   createdAt: string;
   updatedAt: string;
 }
 
 export type PromptSummary = Omit<Prompt, 'body'>;
+
+export interface PromptVariable {
+  name: string;
+  /** Used when no value is given; absent when the variable has none. */
+  default?: string;
+}
+
+/**
+ * `{{name}}` or `{{name=default}}`: a name of letters, digits, `_` and `-` starting with a letter,
+ * and a default of up to 200 characters without braces or line breaks. Anything else between
+ * braces (code, templates for other tools) is left alone.
+ */
+const VARIABLE = /\{\{\s*([A-Za-z][A-Za-z0-9_-]{0,39})\s*(?:=([^{}\n]{0,200}))?\}\}/g;
+
+/** The variables a prompt body uses, each once, in order of first use. */
+export function variablesOf(body: string): PromptVariable[] {
+  const seen = new Map<string, PromptVariable>();
+  for (const match of body.matchAll(VARIABLE)) {
+    const name = match[1] ?? '';
+    if (seen.has(name)) continue;
+    const fallback = match[2]?.trim();
+    seen.set(name, fallback ? { name, default: fallback } : { name });
+  }
+  return [...seen.values()];
+}
+
+export interface FilledPrompt {
+  body: string;
+  /** Variables left as `{{name}}`: no value given and no default. */
+  unfilled: string[];
+  /** Given names the prompt doesn't use. */
+  unknown: string[];
+}
+
+/**
+ * Puts values into a prompt's variables, or their defaults. Nothing is stored: the values are the
+ * user's, for this one use. Values are inserted as given, never interpreted as patterns.
+ */
+export function fillPrompt(body: string, values: Record<string, string>): FilledPrompt {
+  const names = Object.keys(values);
+  if (names.length > PROMPT_LIMITS.fillValues) {
+    throw new PromptError(`At most ${String(PROMPT_LIMITS.fillValues)} values.`);
+  }
+  if (names.some((name) => (values[name] ?? '').length > PROMPT_LIMITS.fillValue)) {
+    throw new PromptError(
+      `Each value can be at most ${String(PROMPT_LIMITS.fillValue)} characters.`,
+    );
+  }
+  const used = new Set(variablesOf(body).map((v) => v.name));
+  const unfilled = new Set<string>();
+  const filled = body.replace(VARIABLE, (whole, name: string, fallback: string | undefined) => {
+    if (Object.hasOwn(values, name)) return values[name] ?? '';
+    if (fallback?.trim()) return fallback.trim();
+    unfilled.add(name);
+    return whole;
+  });
+  return {
+    body: filled,
+    unfilled: [...unfilled],
+    unknown: names.filter((name) => !used.has(name)),
+  };
+}
 
 export class PromptError extends Error {
   override name = 'PromptError';
@@ -102,6 +169,7 @@ function toPrompt(row: PromptRow, uid: string): Prompt {
     author: row.author,
     sharedWithYou: row.owner_uid !== uid && row.shared === 1,
     shareCount: row.owner_uid === uid ? row.share_count : 0,
+    variables: variablesOf(row.body),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };

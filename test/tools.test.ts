@@ -2,7 +2,7 @@ import { env, exports } from 'cloudflare:workers';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { SCOPES } from '../src/caller';
 import { credentialIn } from '../src/credentials';
-import { ftsQuery } from '../src/prompts';
+import { fillPrompt, ftsQuery, variablesOf } from '../src/prompts';
 import { diffLines, removeMember } from '../src/sessions';
 import { deleteUserData } from '../src/account';
 import {
@@ -830,5 +830,73 @@ describe('sessions: staying current (load by title, brief freshness, safe brief 
     expect(diffLines('a\nb\nc', 'a\nc\nd')).toEqual(['- b', '+ d']);
     expect(diffLines('same', 'same')).toEqual([]);
     expect(diffLines('x\n'.repeat(500), 'y')).toEqual([]);
+  });
+});
+
+describe('prompt variables and resuming a session (phase P4)', () => {
+  it('finds each variable once, with its default, and leaves other braces alone', () => {
+    expect(
+      variablesOf('Review {{ lang }} code for {{focus=security}}. Again: {{lang}}. {{1x}} {{a b}}'),
+    ).toEqual([{ name: 'lang' }, { name: 'focus', default: 'security' }]);
+    expect(variablesOf('const o = {{}}; ${x} {{#each items}}')).toEqual([]);
+  });
+
+  it('fills values as given, falls back to defaults and names what is still open', () => {
+    const body = 'Write about {{topic}} in a {{tone=friendly}} tone for {{audience}}.';
+    expect(fillPrompt(body, { topic: 'cost $& $1', extra: 'x' })).toEqual({
+      body: 'Write about cost $& $1 in a friendly tone for {{audience}}.',
+      unfilled: ['audience'],
+      unknown: ['extra'],
+    });
+    expect(fillPrompt(body, { topic: 'a', tone: '', audience: 'b' }).body).toBe(
+      'Write about a in a  tone for b.',
+    );
+    const many = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`v${String(i)}`, 'x']));
+    expect(() => fillPrompt(body, many)).toThrow('At most 20 values');
+  });
+
+  it('get_prompt lists variables and fills them without storing the values', async () => {
+    const client = await connect('user-1');
+    const { id } = await save('user-1', 'Release notes', 'Notes for {{version}} ({{tone=short}})');
+    const plain = await tool(client, 'get_prompt', { id });
+    expect(parsed<{ variables: unknown }>(plain.texts).variables).toEqual([
+      { name: 'version' },
+      { name: 'tone', default: 'short' },
+    ]);
+    const filled = await tool(client, 'get_prompt', { id, fill: { version: '2.1' } });
+    expect(filled.texts[1]).toBe('Notes for 2.1 (short)');
+    expect(parsed<{ filled: boolean; unfilled?: string[] }>(filled.texts)).toEqual(
+      expect.objectContaining({ filled: true }),
+    );
+    expect(parsed<{ unfilled?: string[] }>(filled.texts).unfilled).toBeUndefined();
+    // The stored prompt is unchanged.
+    expect((await tool(client, 'get_prompt', { id })).texts[1]).toBe(
+      'Notes for {{version}} ({{tone=short}})',
+    );
+    // Someone else's prompt stays marked as theirs after filling.
+    const theirs = await publicPrompt('user-2', 'Public', 'Hello {{name}}');
+    const other = await tool(client, 'get_prompt', { id: theirs, fill: { name: 'Ada' } });
+    expect(other.texts[1]).toContain('BEGIN PUBLIC PROMPT');
+    expect(other.texts[1]).toContain('Hello Ada');
+  });
+
+  it('since: "brief" loads only what the current brief may not cover', async () => {
+    const client = await connect('user-1');
+    const id = parsed<{ id: string }>(
+      (await tool(client, 'create_session', { title: 'Core' })).texts,
+    ).id;
+    await tool(client, 'save_to_session', { id, text: 'old one' });
+    // No brief yet: everything.
+    expect((await tool(client, 'load_session', { id, since: 'brief' })).texts.join('\n')).toContain(
+      'old one',
+    );
+    await tool(client, 'update_session_brief', { id, text: 'Goal: ship' });
+    await tool(client, 'save_to_session', { id, text: 'new one' });
+    const resumed = (await tool(client, 'load_session', { id: 'Core', since: 'brief' })).texts.join(
+      '\n',
+    );
+    expect(resumed).toContain('Goal: ship');
+    expect(resumed).toContain('new one');
+    expect(resumed).not.toContain('old one');
   });
 });
