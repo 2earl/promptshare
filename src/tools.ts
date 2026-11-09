@@ -924,6 +924,8 @@ const RESUME_PROMPT = {
   description:
     'Loads a shared session’s brief and what was saved after it, so the conversation picks up where it stood.',
   arguments: [{ name: 'session', description: 'The session’s title or ID.', required: true }],
+  // The gateway lists a prompt only to tokens with the scope it names (2earl/mcp DESIGN §5.4).
+  _meta: STATE_META,
 };
 
 /**

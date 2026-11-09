@@ -996,6 +996,7 @@ describe('the prompt menu: own prompts and resuming a session as MCP prompts (ph
     const { id } = await save('user-1', 'Release notes!', 'Notes for {{version}} ({{tone=short}})');
     await publicPrompt('user-2', 'Someone else’s', 'Theirs');
     const prompts = await listed(client);
+    expect(prompts[0]).toEqual(expect.objectContaining({ _meta: { '2earl/scope': SCOPES.state } }));
     expect(prompts.map((p) => p.name)).toEqual([
       'resume_session',
       `release-notes-${id.slice(0, 8)}`,
