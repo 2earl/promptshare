@@ -1,6 +1,6 @@
 # Prompt share: design
 
-Status: **proposal for review (phase P0).** No code yet.
+Status: **phase P1 built** (assistant tools). P0 reviewed and merged.
 
 Related:
 - [2earl/login](https://github.com/2earl/login), the authorization server;
@@ -150,6 +150,8 @@ trust: 'first-party' }`. Tools appear to assistants as `promptshare__<tool>`.
 | `create_session` | A new session, owned by you | `state` |
 | `load_session` | Read a session's entries | `state` |
 | `save_to_session` | Add an entry | `state` |
+| `delete_session_entry` | Delete an entry you wrote (the owner: any entry) | `state` |
+| `delete_session` | Delete a session you own, for every member | `state` |
 
 The gateway enforces these permissions, and the service checks them again. They are declared in
 login's registry with this consent wording:
@@ -282,13 +284,13 @@ login's "Download your data" includes it.
 P1 needs neither the website nor the domain, and public prompts can't exist before P2, because
 publishing is a website action. So nothing public is hosted before the legal items are done.
 
-## 11. Open decisions for the owner
+## 11. Decisions after review
 
 1. **Limits (§5):** 50 sessions per user, 20 members, 5 MB per session, 64 KB per entry,
-   32 KB per prompt. Proposed.
+   32 KB per prompt. Accepted by the owner, 2026-11-09. Added: 2,000 prompts per user.
 2. **Session owner deletes their account (§7.2):** the session is deleted for every member.
-   The alternative is handing it to a member; proposed: delete, and members see the session's
-   deletion date in their list for 30 days.
-3. **HCP workspace** `2earl-promptshare` and the zone `promptshare.cc` in the 2earl Cloudflare
-   account.
-4. **LEGAL.md §6:** the details only the owner can provide.
+   Proposed, not yet confirmed.
+3. **HCP workspace** `2earl-promptshare`, working directory `infra`: created by the owner,
+   2026-11-09.
+4. **Before phase P2:** `promptshare.cc` must be a zone in the 2earl Cloudflare account; the
+   LEGAL.md §6 items.

@@ -79,18 +79,17 @@ replaced (DESIGN §7.2).
 
 Drafts are written in phase P2 and reviewed before launch.
 
-## 6. Owner items (only you can do these)
+## 6. Owner items
 
-1. **Contact address** for DSA Art. 11 and 12. A mailbox that is read, e.g. `legal@2earl.com`.
-   Which address?
-2. **Imprint details:** name and a postal address for service. If you don't want your home
-   address published, a c/o or business-address service is commonly used [check with a lawyer
-   whether it satisfies § 5 DDG].
-3. **Lawyer review** of this list and the §5 texts before phase P2 launches.
-4. **Cloudflare data processing agreement:** Cloudflare's customer DPA is part of its self-serve
-   terms; confirm it applies to the account.
-5. **Records of processing** (GDPR Art. 30): a short document covering login, the gateway and
-   Prompt share. It can live in login's DATA_PROTECTION.md.
+| # | Item | State |
+|---|---|---|
+| 1 | Contact address for DSA Art. 11 and 12 | **Given:** the address in the 2earl imprint. It goes on promptshare.cc's contact page in phase P2 |
+| 2 | Imprint | **Exists** at `2earl.com/imprint`. Its scope covers "every other 2earl service that links to it", so promptshare.cc links to it from every page |
+| 3 | Imprint gap: a second fast contact channel besides email | **Open.** Usually a phone number; an electronic contact form that is answered quickly is generally accepted as the alternative [check with a lawyer]. Proposed: promptshare.cc's contact form (phase P2), linked from the imprint |
+| 4 | Lawyer review of this list and the §5 texts | **Open**, before phase P2 launches |
+| 5 | Cloudflare data processing agreement | **Open:** confirm it applies to the account (it is part of Cloudflare's self-serve terms) |
+| 6 | Records of processing (GDPR Art. 30) | **Open:** a short document for login, the gateway and Prompt share, written with phase P2 |
+| 7 | Terms and privacy policy on 2earl.com cover Prompt share | **Open:** a 2earl/website PR in phase P2 |
 
 ## 7. Sources
 

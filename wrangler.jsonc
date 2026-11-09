@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "promptshare",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+
+  // Phase P1 has no public route at all: only the gateway (GatewayMcp) and login (AccountEvents)
+  // reach this Worker, over Service Bindings. promptshare.cc is attached in phase P2.
+  "workers_dev": false,
+  "preview_urls": false,
+
+  // Invocation logs could record request content.
+  "observability": {
+    "enabled": false,
+  },
+
+  // Set by the deploy workflow from the GitHub `production` environment.
+  "secrets": {
+    "required": [
+      // Encrypts shared-session entries (docs/DESIGN.md §7.1).
+      "STATE_ENCRYPTION_KEY",
+    ],
+  },
+
+  // Created by infra/storage.tf (EU jurisdiction); set after the first terraform apply.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "promptshare",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+
+  // Daily at 03:53 UTC: old security-log entries.
+  "triggers": {
+    "crons": ["53 3 * * *"],
+  },
+}

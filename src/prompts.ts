@@ -1,0 +1,281 @@
+/**
+ * Prompts (docs/DESIGN.md §4). Every query is keyed by the caller: a prompt is visible to its
+ * owner always, including after moderation, and to every 2earl user while it is public and
+ * active. "Not found" covers both missing and not visible.
+ */
+
+export const PROMPT_LIMITS = {
+  title: 200,
+  description: 1_000,
+  body: 32 * 1024,
+  tags: 10,
+  tagLength: 40,
+  models: 10,
+  modelLength: 60,
+  perUser: 2_000,
+  searchResults: 20,
+} as const;
+
+export interface PromptInput {
+  title: string;
+  description?: string | undefined;
+  body: string;
+  tags?: string[] | undefined;
+  models?: string[] | undefined;
+}
+
+interface PromptRow {
+  id: string;
+  owner_uid: string;
+  title: string;
+  description: string;
+  body: string;
+  tags: string;
+  models: string;
+  visibility: 'private' | 'public';
+  status: 'active' | 'restricted' | 'removed';
+  copied_from: string | null;
+  created_at: number;
+  updated_at: number;
+  published_at: number | null;
+}
+
+export interface Prompt {
+  id: string;
+  mine: boolean;
+  title: string;
+  description: string;
+  body: string;
+  tags: string[];
+  models: string[];
+  visibility: 'private' | 'public';
+  status: 'active' | 'restricted' | 'removed';
+  copiedFrom: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PromptSummary = Omit<Prompt, 'body'>;
+
+export class PromptError extends Error {
+  override name = 'PromptError';
+}
+
+const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
+
+/** Visible to `uid`: their own, or public and active. */
+const VISIBLE = `(owner_uid = ?1 OR (visibility = 'public' AND status = 'active'))`;
+
+function toPrompt(row: PromptRow, uid: string): Prompt {
+  return {
+    id: row.id,
+    mine: row.owner_uid === uid,
+    title: row.title,
+    description: row.description,
+    body: row.body,
+    tags: JSON.parse(row.tags) as string[],
+    models: JSON.parse(row.models) as string[],
+    visibility: row.visibility,
+    status: row.status,
+    copiedFrom: row.copied_from,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+function summary(prompt: Prompt): PromptSummary {
+  const rest: Partial<Prompt> = { ...prompt };
+  delete rest.body;
+  return rest as PromptSummary;
+}
+
+function cleanList(values: string[] | undefined, max: number, length: number, what: string) {
+  const list = [...new Set((values ?? []).map((v) => v.trim()).filter(Boolean))];
+  if (list.length > max) throw new PromptError(`At most ${String(max)} ${what}.`);
+  if (list.some((v) => v.length > length)) {
+    throw new PromptError(`Each of the ${what} can be at most ${String(length)} characters.`);
+  }
+  return list;
+}
+
+function validate(input: PromptInput) {
+  const title = input.title.trim();
+  if (!title) throw new PromptError('A prompt needs a title.');
+  if (title.length > PROMPT_LIMITS.title) {
+    throw new PromptError(`The title can be at most ${String(PROMPT_LIMITS.title)} characters.`);
+  }
+  const description = (input.description ?? '').trim();
+  if (description.length > PROMPT_LIMITS.description) {
+    throw new PromptError(
+      `The description can be at most ${String(PROMPT_LIMITS.description)} characters.`,
+    );
+  }
+  if (!input.body.trim()) throw new PromptError('The prompt is empty.');
+  if (new TextEncoder().encode(input.body).length > PROMPT_LIMITS.body) {
+    throw new PromptError(`A prompt can be at most ${String(PROMPT_LIMITS.body / 1024)} KB.`);
+  }
+  return {
+    title,
+    description,
+    body: input.body,
+    tags: cleanList(input.tags, PROMPT_LIMITS.tags, PROMPT_LIMITS.tagLength, 'tags'),
+    models: cleanList(input.models, PROMPT_LIMITS.models, PROMPT_LIMITS.modelLength, 'models'),
+  };
+}
+
+/** Words → an FTS5 query that matches all of them, with no FTS syntax from the user. */
+export function ftsQuery(text: string): string | null {
+  const words = text.match(/[\p{L}\p{N}_]+/gu) ?? [];
+  if (words.length === 0) return null;
+  return words
+    .slice(0, 12)
+    .map((word) => `"${word}"*`)
+    .join(' ');
+}
+
+export async function searchPrompts(
+  db: D1Database,
+  uid: string,
+  options: { query?: string | undefined; scope: 'mine' | 'public' | 'all' },
+): Promise<PromptSummary[]> {
+  const where = [VISIBLE];
+  if (options.scope === 'mine') where.push('owner_uid = ?1');
+  if (options.scope === 'public') where.push(`visibility = 'public' AND status = 'active'`);
+  const match = options.query ? ftsQuery(options.query) : null;
+  const sql = match
+    ? `SELECT p.* FROM prompts_fts f JOIN prompts p ON p.rowid = f.rowid
+       WHERE prompts_fts MATCH ?2 AND ${where.join(' AND ')}
+       ORDER BY bm25(prompts_fts), p.updated_at DESC LIMIT ${String(PROMPT_LIMITS.searchResults)}`
+    : `SELECT * FROM prompts WHERE ${where.join(' AND ')}
+       ORDER BY updated_at DESC LIMIT ${String(PROMPT_LIMITS.searchResults)}`;
+  const statement = db.prepare(sql);
+  const { results } = await (
+    match ? statement.bind(uid, match) : statement.bind(uid)
+  ).all<PromptRow>();
+  return results.map((row) => summary(toPrompt(row, uid)));
+}
+
+export async function getPrompt(db: D1Database, uid: string, id: string): Promise<Prompt | null> {
+  const row = await db
+    .prepare(`SELECT * FROM prompts WHERE id = ?2 AND ${VISIBLE}`)
+    .bind(uid, id)
+    .first<PromptRow>();
+  return row ? toPrompt(row, uid) : null;
+}
+
+async function ownCount(db: D1Database, uid: string): Promise<number> {
+  const row = await db
+    .prepare('SELECT COUNT(*) AS n FROM prompts WHERE owner_uid = ?')
+    .bind(uid)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+export async function savePrompt(
+  db: D1Database,
+  uid: string,
+  now: number,
+  input: PromptInput,
+  copiedFrom: string | null = null,
+): Promise<Prompt> {
+  const clean = validate(input);
+  if ((await ownCount(db, uid)) >= PROMPT_LIMITS.perUser) {
+    throw new PromptError(
+      `You have ${String(PROMPT_LIMITS.perUser)} prompts, the most one account can keep. Delete some first.`,
+    );
+  }
+  const id = crypto.randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO prompts (id, owner_uid, title, description, body, tags, models, copied_from, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      uid,
+      clean.title,
+      clean.description,
+      clean.body,
+      JSON.stringify(clean.tags),
+      JSON.stringify(clean.models),
+      copiedFrom,
+      now,
+      now,
+    )
+    .run();
+  const saved = await getPrompt(db, uid, id);
+  if (!saved) throw new Error('prompt vanished after insert');
+  return saved;
+}
+
+/** Changes only the fields given. Only the owner can change a prompt. */
+export async function updatePrompt(
+  db: D1Database,
+  uid: string,
+  now: number,
+  id: string,
+  patch: { [K in keyof PromptInput]?: PromptInput[K] | undefined },
+): Promise<Prompt | null> {
+  const current = await getPrompt(db, uid, id);
+  if (!current?.mine) return null;
+  const clean = validate({
+    title: patch.title ?? current.title,
+    description: patch.description ?? current.description,
+    body: patch.body ?? current.body,
+    tags: patch.tags ?? current.tags,
+    models: patch.models ?? current.models,
+  });
+  await db
+    .prepare(
+      `UPDATE prompts SET title = ?, description = ?, body = ?, tags = ?, models = ?, updated_at = ?
+       WHERE id = ? AND owner_uid = ?`,
+    )
+    .bind(
+      clean.title,
+      clean.description,
+      clean.body,
+      JSON.stringify(clean.tags),
+      JSON.stringify(clean.models),
+      now,
+      id,
+      uid,
+    )
+    .run();
+  return getPrompt(db, uid, id);
+}
+
+export async function unpublishPrompt(
+  db: D1Database,
+  uid: string,
+  now: number,
+  id: string,
+): Promise<boolean> {
+  const { meta } = await db
+    .prepare(
+      `UPDATE prompts SET visibility = 'private', published_at = NULL, updated_at = ?
+       WHERE id = ? AND owner_uid = ?`,
+    )
+    .bind(now, id, uid)
+    .run();
+  return meta.changes > 0;
+}
+
+export async function deletePrompt(db: D1Database, uid: string, id: string): Promise<boolean> {
+  const { meta } = await db
+    .prepare('DELETE FROM prompts WHERE id = ? AND owner_uid = ?')
+    .bind(id, uid)
+    .run();
+  return meta.changes > 0;
+}
+
+/** A private copy of a prompt the caller can see, owned by the caller. */
+export async function copyPrompt(
+  db: D1Database,
+  uid: string,
+  now: number,
+  id: string,
+): Promise<Prompt | null> {
+  const source = await getPrompt(db, uid, id);
+  if (!source) return null;
+  return savePrompt(db, uid, now, source, source.id);
+}
