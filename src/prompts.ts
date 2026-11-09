@@ -560,3 +560,32 @@ export async function publishPrompt(
     .run();
   return getPrompt(db, uid, id);
 }
+
+/**
+ * The caller's own prompts as entries in the assistant's prompt menu (§4.4): newest first, at
+ * most `MENU_PROMPTS`. Only their own: a prompt picked from the menu is sent as the user's own
+ * message, so text another user wrote never goes there.
+ */
+export const MENU_PROMPTS = 50;
+
+export async function menuPrompts(db: D1Database, uid: string): Promise<Prompt[]> {
+  const { results } = await db
+    .prepare(`${SELECT} WHERE p.owner_uid = ?1 ORDER BY p.updated_at DESC LIMIT ?2`)
+    .bind(uid, MENU_PROMPTS)
+    .all<PromptRow>();
+  return results.map((row) => toPrompt(row, uid));
+}
+
+/** One of the caller's own prompts by the start of its ID (the menu's short form). */
+export async function ownPromptByPrefix(
+  db: D1Database,
+  uid: string,
+  prefix: string,
+): Promise<Prompt | null> {
+  if (!/^[0-9a-f-]{8,36}$/.test(prefix)) return null;
+  const { results } = await db
+    .prepare(`${SELECT} WHERE p.owner_uid = ?1 AND p.id LIKE ?2 LIMIT 2`)
+    .bind(uid, `${prefix}%`)
+    .all<PromptRow>();
+  return results.length === 1 && results[0] ? toPrompt(results[0], uid) : null;
+}

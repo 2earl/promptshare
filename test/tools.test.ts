@@ -979,3 +979,76 @@ describe('earlier versions of a prompt (phase P5)', () => {
     expect(await count('prompt_versions', 'owner_uid = ?', 'user-1')).toBe(0);
   });
 });
+
+describe('the prompt menu: own prompts and resuming a session as MCP prompts (phase P6)', () => {
+  type Listed = {
+    name: string;
+    title?: string;
+    arguments?: { name: string; required?: boolean }[];
+  };
+  const listed = async (client: Awaited<ReturnType<typeof connect>>) =>
+    (await client.listPrompts()).prompts as Listed[];
+  const textOf = (result: { messages: { content: unknown }[] }) =>
+    (result.messages[0]?.content as { text: string }).text;
+
+  it('lists only the user’s own prompts, with their variables as arguments', async () => {
+    const client = await connect('user-1');
+    const { id } = await save('user-1', 'Release notes!', 'Notes for {{version}} ({{tone=short}})');
+    await publicPrompt('user-2', 'Someone else’s', 'Theirs');
+    const prompts = await listed(client);
+    expect(prompts[0]).toEqual(expect.objectContaining({ _meta: { '2earl/scope': SCOPES.state } }));
+    expect(prompts.map((p) => p.name)).toEqual([
+      'resume_session',
+      `release-notes-${id.slice(0, 8)}`,
+    ]);
+    expect(prompts[1]).toEqual(
+      expect.objectContaining({
+        title: 'Release notes!',
+        arguments: [
+          expect.objectContaining({ name: 'version', required: true }),
+          expect.objectContaining({ name: 'tone', required: false }),
+        ],
+      }),
+    );
+  });
+
+  it('gets a prompt filled in as the user’s message, with defaults for empty values', async () => {
+    const client = await connect('user-1');
+    const { id } = await save('user-1', 'Notes', 'Notes for {{version}} ({{tone=short}})');
+    const result = await client.getPrompt({
+      name: `notes-${id.slice(0, 8)}`,
+      arguments: { version: '2.1', tone: '' },
+    });
+    expect(result.messages[0]?.role).toBe('user');
+    expect(textOf(result)).toBe('Notes for 2.1 (short)');
+    // Another user can't get it by guessing the name.
+    await expect(
+      (await connect('user-2')).getPrompt({ name: `notes-${id.slice(0, 8)}` }),
+    ).rejects.toThrow();
+  });
+
+  it('resumes a session from its brief, and follows the app’s permissions', async () => {
+    const client = await connect('user-1');
+    const id = parsed<{ id: string }>(
+      (await tool(client, 'create_session', { title: 'Core' })).texts,
+    ).id;
+    await tool(client, 'save_to_session', { id, text: 'before the brief' });
+    await tool(client, 'update_session_brief', { id, text: 'Goal: ship' });
+    await tool(client, 'save_to_session', { id, text: 'after the brief' });
+    const text = textOf(
+      await client.getPrompt({ name: 'resume_session', arguments: { session: 'core' } }),
+    );
+    expect(text).toContain('continue the shared session “Core”');
+    expect(text).toContain('Goal: ship');
+    expect(text).toContain('after the brief');
+    expect(text).not.toContain('before the brief');
+
+    const readOnly = await connect('user-1', [SCOPES.read]);
+    expect((await listed(readOnly)).map((p) => p.name)).not.toContain('resume_session');
+    await expect(
+      readOnly.getPrompt({ name: 'resume_session', arguments: { session: 'Core' } }),
+    ).rejects.toThrow();
+    const stateOnly = await connect('user-1', [SCOPES.state]);
+    expect((await listed(stateOnly)).map((p) => p.name)).toEqual(['resume_session']);
+  });
+});

@@ -194,6 +194,8 @@ ${addressSlip(address)}
 <thead><tr><th scope="col">Tool</th><th scope="col">Does</th></tr></thead>
 <tbody>${rows}</tbody>
 </table>
+<h2>Your prompts in the prompt menu</h2>
+<p>Assistants that show MCP prompts list your 50 newest prompts there, and <strong>Resume a shared session</strong>. Pick a prompt and it is sent as your message, with its <code>{{variables}}</code> filled in from what you type. Pick Resume, name a session, and the assistant reads its brief and what was saved after it. Only your own prompts are listed: text someone else wrote never goes out as your message.</p>
 <p>Making a prompt public, sharing it with someone, and inviting people to a session are only possible here on the website, never through an assistant: text an assistant reads can’t make it share your things.</p>
 <h2>What is stored</h2>
 <ul class="plain">
