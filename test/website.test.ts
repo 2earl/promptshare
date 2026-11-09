@@ -1278,3 +1278,77 @@ describe('sessions on the website (phase S2)', () => {
     expect(await count('shared_sessions', "id = ? AND title = 'Launch v2'", id)).toBe(1);
   });
 });
+
+describe('sessions on the website (phase S3)', () => {
+  async function team() {
+    await env.DB.prepare(
+      "INSERT INTO profiles (uid, handle, created_at, updated_at) VALUES ('user-1', 'ada', 1, 1), ('user-2', 'bo', 1, 1)",
+    ).run();
+    const owner = (await signIn('user-1')).cookie;
+    const id =
+      ((await post('/sessions', { title: 'Offsite plan' }, owner)).headers.get('Location') ?? '')
+        .split('/')
+        .pop() ?? '';
+    await addMember(id, 'user-2', 'viewer');
+    return { owner, id };
+  }
+
+  it('adds an assigned task and marks it done; a viewer can’t', async () => {
+    const { owner, id } = await team();
+    await post(
+      `/sessions/${id}/entries`,
+      { text: 'Book rooms', kind: 'task', assignee: 'bo' },
+      owner,
+    );
+    const task = await env.DB.prepare("SELECT id FROM session_entries WHERE kind = 'task'").first<{
+      id: string;
+    }>();
+    expect(await (await get(`/sessions/${id}`, owner)).text()).toContain('Task · open');
+    const viewer = (await signIn('user-2')).cookie;
+    expect(
+      (await post(`/sessions/${id}/entries/${task?.id ?? ''}/task`, { status: 'done' }, viewer))
+        .status,
+    ).toBe(400);
+    expect(
+      (await post(`/sessions/${id}/entries/${task?.id ?? ''}/task`, { status: 'done' }, owner))
+        .status,
+    ).toBe(303);
+    const page = await (await get(`/sessions/${id}`, owner)).text();
+    expect(page).toContain('Task · done');
+    expect(page).toContain('for @bo');
+    expect(page).toContain('Reopen');
+  });
+
+  it('searches the session and downloads it as Markdown', async () => {
+    const { owner, id } = await team();
+    await post(`/sessions/${id}/brief`, { brief: 'Goal: Lisbon offsite' }, owner);
+    await post(
+      `/sessions/${id}/entries`,
+      { text: 'Flights to Lisbon', kind: 'decision', label: 'Travel' },
+      owner,
+    );
+    const found = await (await get(`/sessions/${id}/search?q=lisbon`, owner)).text();
+    expect(found).toContain('2 found in 2 entries');
+    const file = await get(`/sessions/${id}/export`, owner);
+    expect(file.headers.get('Content-Type')).toContain('text/markdown');
+    expect(file.headers.get('Content-Disposition')).toBe('attachment; filename="offsite-plan.md"');
+    const md = await file.text();
+    expect(md).toContain('# Offsite plan');
+    expect(md).toContain('## Brief');
+    expect(md).toContain('### Decision · Travel · you,');
+    expect((await get(`/sessions/${id}/export`, (await signIn('user-3')).cookie)).status).toBe(404);
+    expect((await get(`/sessions/${id}/export?part=2`, owner)).status).toBe(404);
+  });
+
+  it('splits a large session into parts', async () => {
+    const { owner, id } = await team();
+    const big = 'filler '.repeat(9000);
+    for (let i = 0; i < 10; i++)
+      await post(`/sessions/${id}/entries`, { text: `${String(i)} ${big}` }, owner);
+    const parts = await (await get(`/sessions/${id}/export`, owner)).text();
+    expect(parts).toContain('Part 2 of 2');
+    const second = await get(`/sessions/${id}/export?part=2`, owner);
+    expect(second.headers.get('Content-Disposition')).toContain('offsite-plan-part-2.md');
+    expect(await second.text()).toContain('part 2 of 2');
+  });
+});

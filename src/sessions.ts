@@ -19,7 +19,15 @@ export const SESSION_LIMITS = {
   /** The brief: one text that changes; each change is a new version (§5.1). */
   brief: 16 * 1024,
   briefVersions: 20,
+  /**
+   * Search and export read at most this much per request, by stored size. Decrypting a whole
+   * 5 MB session takes about 110 ms of CPU (measured locally); the free plan allows 10 ms.
+   */
+  scanBytes: 512 * 1024,
+  searchResults: 20,
 } as const;
+
+export type TaskStatus = 'open' | 'done';
 
 /** What an entry is, so assistants can tell a decision from a note (§5.1). */
 export const ENTRY_KINDS = ['note', 'decision', 'question', 'task', 'summary', 'artifact'] as const;
@@ -50,6 +58,8 @@ export interface Entry {
   kind: EntryKind | 'brief';
   /** The entry this one answers. */
   replyTo: string | null;
+  /** Entries of kind task: open or done, and the member's handle it is assigned to. */
+  task: { status: TaskStatus; assignee: string | null; assignedToYou: boolean } | null;
   /** Written by the caller (any of their assistants), or by another member. */
   mine: boolean;
   label: string;
@@ -175,15 +185,23 @@ interface EntryRow {
   kind: EntryKind | 'brief';
   reply_to: string | null;
   label: string;
-  iv: number[];
-  ciphertext: number[];
+  iv: string;
+  ciphertext: string;
   size: number;
   created_at: number;
   author: string | null;
+  task_status: TaskStatus | null;
+  assignee_uid: string | null;
+  assignee: string | null;
 }
 
-const ENTRY_COLUMNS = `e.id, e.author_uid, e.client_id, e.kind, e.reply_to, e.label, e.iv, e.ciphertext,
-  e.size, e.created_at, pr.handle AS author`;
+const ENTRY_COLUMNS = `e.id, e.author_uid, e.client_id, e.kind, e.reply_to, e.label,
+  hex(e.iv) AS iv, hex(e.ciphertext) AS ciphertext, e.size, e.created_at, pr.handle AS author,
+  e.task_status, e.assignee_uid, pa.handle AS assignee`;
+
+/** Entries with their author's and assignee's handles. */
+const ENTRY_FROM = `FROM session_entries e LEFT JOIN profiles pr ON pr.uid = e.author_uid
+  LEFT JOIN profiles pa ON pa.uid = e.assignee_uid`;
 
 async function toEntry(
   secret: string,
@@ -195,6 +213,14 @@ async function toEntry(
     id: row.id,
     kind: row.kind,
     replyTo: row.reply_to,
+    task:
+      row.kind === 'task'
+        ? {
+            status: row.task_status ?? 'open',
+            assignee: row.assignee,
+            assignedToYou: row.assignee_uid === uid,
+          }
+        : null,
     mine: row.author_uid === uid,
     label: row.label,
     text: await decryptEntry(secret, sessionId, row.id, row.iv, row.ciphertext),
@@ -224,6 +250,8 @@ export interface LoadOptions {
   /** Entries newer than this entry. */
   since?: string | undefined;
   kind?: EntryKind | undefined;
+  /** Tasks that are open, or done. */
+  status?: TaskStatus | undefined;
   /** When set, and the newest entries are loaded, they stop counting as new for the caller. */
   markReadAt?: number | undefined;
 }
@@ -261,10 +289,11 @@ export async function loadSession(
   const { results } = await db
     .prepare(
       `SELECT ${ENTRY_COLUMNS}
-       FROM session_entries e LEFT JOIN profiles pr ON pr.uid = e.author_uid
+       ${ENTRY_FROM}
        WHERE e.session_id = ?1 AND e.removed_at IS NULL AND e.kind <> 'brief'
          AND (?2 IS NULL OR e.kind = ?2)
          AND e.rowid < ?3 AND e.rowid > ?4
+         AND (?6 IS NULL OR e.task_status = ?6)
        ORDER BY e.rowid DESC LIMIT ?5`,
     )
     .bind(
@@ -273,6 +302,7 @@ export async function loadSession(
       before ?? Number.MAX_SAFE_INTEGER,
       since ?? 0,
       SESSION_LIMITS.loadEntries + 1,
+      options.status ?? null,
     )
     .all<EntryRow>();
 
@@ -291,16 +321,7 @@ export async function loadSession(
     entries.push(await toEntry(secret, sessionId, uid, row));
   }
 
-  const briefs = await db
-    .prepare(
-      `SELECT ${ENTRY_COLUMNS}, (SELECT COUNT(*) FROM session_entries b
-                                 WHERE b.session_id = ?1 AND b.kind = 'brief' AND b.removed_at IS NULL) AS versions
-       FROM session_entries e LEFT JOIN profiles pr ON pr.uid = e.author_uid
-       WHERE e.session_id = ?1 AND e.kind = 'brief' AND e.removed_at IS NULL
-       ORDER BY e.rowid DESC LIMIT 1`,
-    )
-    .bind(sessionId)
-    .first<EntryRow & { versions: number }>();
+  const current = await currentBrief(db, secret, uid, sessionId);
 
   // Loading the newest entries (not paging back) means the caller has seen what's new.
   if (options.markReadAt !== undefined && !options.before) {
@@ -312,11 +333,34 @@ export async function loadSession(
   return {
     title: member.title,
     role: member.role,
-    brief: briefs ? await toEntry(secret, sessionId, uid, briefs) : null,
-    briefVersions: briefs?.versions ?? 0,
+    brief: current.brief,
+    briefVersions: current.versions,
     entries,
     more,
     lastLoadedAt: member.last_read_at === null ? null : iso(member.last_read_at),
+  };
+}
+
+/** The newest brief not removed, and how many versions there are. Callers check membership. */
+async function currentBrief(
+  db: D1Database,
+  secret: string,
+  uid: string,
+  sessionId: string,
+): Promise<{ brief: Entry | null; versions: number }> {
+  const row = await db
+    .prepare(
+      `SELECT ${ENTRY_COLUMNS}, (SELECT COUNT(*) FROM session_entries b
+                                 WHERE b.session_id = ?1 AND b.kind = 'brief' AND b.removed_at IS NULL) AS versions
+       ${ENTRY_FROM}
+       WHERE e.session_id = ?1 AND e.kind = 'brief' AND e.removed_at IS NULL
+       ORDER BY e.rowid DESC LIMIT 1`,
+    )
+    .bind(sessionId)
+    .first<EntryRow & { versions: number }>();
+  return {
+    brief: row ? await toEntry(secret, sessionId, uid, row) : null,
+    versions: row?.versions ?? 0,
   };
 }
 
@@ -331,7 +375,7 @@ export async function briefHistory(
   const { results } = await db
     .prepare(
       `SELECT ${ENTRY_COLUMNS}
-       FROM session_entries e LEFT JOIN profiles pr ON pr.uid = e.author_uid
+       ${ENTRY_FROM}
        WHERE e.session_id = ? AND e.kind = 'brief' AND e.removed_at IS NULL
        ORDER BY e.rowid DESC LIMIT ?`,
     )
@@ -349,7 +393,12 @@ async function addEntry(
   now: number,
   sessionId: string,
   text: string,
-  fields: { label: string; kind: EntryKind | 'brief'; replyTo: string | null },
+  fields: {
+    label: string;
+    kind: EntryKind | 'brief';
+    replyTo: string | null;
+    assignee?: string | undefined;
+  },
 ): Promise<Entry | null> {
   const role = await roleOf(db, caller.uid, sessionId);
   if (!role) return null;
@@ -375,6 +424,13 @@ async function addEntry(
       .first<{ ok: number }>();
     if (!target)
       throw new SessionError('There is no entry with that ID in this session to reply to.');
+  }
+
+  const assignee = fields.assignee?.trim()
+    ? await memberByHandle(db, sessionId, fields.assignee)
+    : null;
+  if (fields.assignee?.trim() && fields.kind !== 'task') {
+    throw new SessionError('Only a task can be assigned.');
   }
 
   const stats = await db
@@ -404,8 +460,8 @@ async function addEntry(
   const statements = [
     db
       .prepare(
-        `INSERT INTO session_entries (id, session_id, author_uid, client_id, kind, reply_to, label, iv, ciphertext, size, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO session_entries (id, session_id, author_uid, client_id, kind, reply_to, label, iv, ciphertext, size, created_at, task_status, assignee_uid)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         id,
@@ -419,6 +475,8 @@ async function addEntry(
         ciphertext,
         size,
         now,
+        fields.kind === 'task' ? 'open' : null,
+        assignee?.uid ?? null,
       ),
     db.prepare('UPDATE shared_sessions SET updated_at = ? WHERE id = ?').bind(now, sessionId),
   ];
@@ -439,6 +497,14 @@ async function addEntry(
     id,
     kind: fields.kind,
     replyTo: fields.replyTo,
+    task:
+      fields.kind === 'task'
+        ? {
+            status: 'open',
+            assignee: assignee?.handle ?? null,
+            assignedToYou: assignee?.uid === caller.uid,
+          }
+        : null,
     mine: true,
     label: cleanLabel,
     text,
@@ -456,7 +522,12 @@ export async function saveToSession(
   sessionId: string,
   text: string,
   label = '',
-  options: { kind?: EntryKind | undefined; replyTo?: string | undefined } = {},
+  options: {
+    kind?: EntryKind | undefined;
+    replyTo?: string | undefined;
+    /** A member's handle, for a task. */
+    assignee?: string | undefined;
+  } = {},
 ): Promise<Entry | null> {
   const kind = options.kind ?? 'note';
   if (!(ENTRY_KINDS as readonly string[]).includes(kind)) {
@@ -466,6 +537,7 @@ export async function saveToSession(
     label,
     kind,
     replyTo: options.replyTo?.trim() || null,
+    assignee: options.assignee,
   });
 }
 
@@ -483,6 +555,226 @@ export async function updateBrief(
     kind: 'brief',
     replyTo: null,
   });
+}
+
+async function memberByHandle(
+  db: D1Database,
+  sessionId: string,
+  handle: string,
+): Promise<{ uid: string; handle: string }> {
+  const row = await db
+    .prepare(
+      `SELECT m.uid, pr.handle FROM session_members m JOIN profiles pr ON pr.uid = m.uid
+       WHERE m.session_id = ? AND pr.handle = ? COLLATE NOCASE`,
+    )
+    .bind(sessionId, handle.trim().replace(/^@/, ''))
+    .first<{ uid: string; handle: string }>();
+  if (!row) throw new SessionError('No member of this session has that handle.');
+  return row;
+}
+
+/**
+ * Marks a task open or done, or assigns it to a member ('' or null: nobody). Editors and the
+ * owner; the task's text doesn't change, so it stays clear who wrote it.
+ */
+export async function updateTask(
+  db: D1Database,
+  uid: string,
+  now: number,
+  sessionId: string,
+  entryId: string,
+  change: { status?: TaskStatus | undefined; assignee?: string | null | undefined },
+): Promise<boolean> {
+  const role = await roleOf(db, uid, sessionId);
+  if (!role) return false;
+  if (role === 'viewer') throw new SessionError('You can read this session but not change it.');
+  const assignee =
+    change.assignee === undefined
+      ? undefined
+      : change.assignee === null || !change.assignee.trim()
+        ? null
+        : (await memberByHandle(db, sessionId, change.assignee)).uid;
+  const { meta } = await db
+    .prepare(
+      `UPDATE session_entries
+       SET task_status = COALESCE(?1, task_status),
+           assignee_uid = CASE WHEN ?2 = 1 THEN ?3 ELSE assignee_uid END
+       WHERE id = ?4 AND session_id = ?5 AND kind = 'task' AND removed_at IS NULL`,
+    )
+    .bind(
+      change.status ?? null,
+      assignee === undefined ? 0 : 1,
+      assignee ?? null,
+      entryId,
+      sessionId,
+    )
+    .run();
+  if (meta.changes === 0) return false;
+  await db
+    .prepare('UPDATE shared_sessions SET updated_at = ? WHERE id = ?')
+    .bind(now, sessionId)
+    .run();
+  return true;
+}
+
+/** Entries (and, without `before`, the current brief) newest first, within `scanBytes`. */
+async function scanWindow(db: D1Database, sessionId: string, beforeEntry: string | undefined) {
+  const before = await anchorOf(db, sessionId, beforeEntry);
+  // Sizes first (no ciphertext), so only rows within the budget are fetched and decrypted.
+  const { results } = await db
+    .prepare(
+      `SELECT e.rowid AS position, e.id, e.size FROM session_entries e
+       WHERE e.session_id = ?1 AND e.removed_at IS NULL AND e.rowid < ?2
+         AND (e.kind <> 'brief' OR (?3 = 1 AND e.rowid = (SELECT MAX(b.rowid) FROM session_entries b
+                WHERE b.session_id = ?1 AND b.kind = 'brief' AND b.removed_at IS NULL)))
+       ORDER BY e.rowid DESC`,
+    )
+    .bind(sessionId, before ?? Number.MAX_SAFE_INTEGER, beforeEntry ? 0 : 1)
+    .all<{ position: number; id: string; size: number }>();
+  let used = 0;
+  let count = 0;
+  for (const row of results) {
+    if (count > 0 && used + row.size > SESSION_LIMITS.scanBytes) break;
+    used += row.size;
+    count++;
+  }
+  const window = results.slice(0, count);
+  const oldest = window.at(-1);
+  return {
+    first: window[0]?.position ?? 0,
+    last: oldest?.position ?? 0,
+    count,
+    continueBefore: count < results.length && oldest ? oldest.id : null,
+  };
+}
+
+/** Lower-cased words of a query: an entry matches when its text holds all of them. */
+function queryWords(query: string): string[] {
+  return [...new Set(query.toLocaleLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [])].slice(0, 12);
+}
+
+/**
+ * Searches one session, newest first, reading at most `scanBytes` per call; `continueBefore`
+ * says where to go on. Entries are encrypted, so this decrypts them; there is no search across
+ * sessions (§7.1).
+ */
+export async function searchSession(
+  db: D1Database,
+  secret: string,
+  uid: string,
+  sessionId: string,
+  query: string,
+  beforeEntry?: string,
+): Promise<{ matches: Entry[]; searched: number; continueBefore: string | null } | null> {
+  if (!(await roleOf(db, uid, sessionId))) return null;
+  const words = queryWords(query);
+  if (words.length === 0) throw new SessionError('Give words to search for.');
+  const window = await scanWindow(db, sessionId, beforeEntry);
+  const matches: Entry[] = [];
+  if (window.count > 0) {
+    const { results } = await db
+      .prepare(
+        `SELECT ${ENTRY_COLUMNS} ${ENTRY_FROM}
+         WHERE e.session_id = ?1 AND e.removed_at IS NULL AND e.rowid <= ?2 AND e.rowid >= ?3
+           AND (e.kind <> 'brief' OR (?4 = 1 AND e.rowid = (SELECT MAX(b.rowid) FROM session_entries b
+                  WHERE b.session_id = ?1 AND b.kind = 'brief' AND b.removed_at IS NULL)))
+         ORDER BY e.rowid DESC`,
+      )
+      .bind(sessionId, window.first, window.last, beforeEntry ? 0 : 1)
+      .all<EntryRow>();
+    for (const row of results) {
+      const entry = await toEntry(secret, sessionId, uid, row);
+      const haystack = `${entry.label}\n${entry.text}`.toLocaleLowerCase();
+      if (words.every((word) => haystack.includes(word))) matches.push(entry);
+      if (matches.length === SESSION_LIMITS.searchResults) break;
+    }
+  }
+  return { matches, searched: window.count, continueBefore: window.continueBefore };
+}
+
+/**
+ * The session as Markdown, oldest entry first, in parts of at most `scanBytes` (the brief leads
+ * part 1). Parts are counted from stored sizes, without decrypting.
+ */
+export async function exportSession(
+  db: D1Database,
+  secret: string,
+  uid: string,
+  sessionId: string,
+  part: number,
+  now: number,
+): Promise<{ markdown: string; part: number; parts: number; title: string } | null> {
+  const member = await db
+    .prepare(
+      `SELECT s.title FROM session_members m JOIN shared_sessions s ON s.id = m.session_id
+       WHERE m.session_id = ? AND m.uid = ?`,
+    )
+    .bind(sessionId, uid)
+    .first<{ title: string }>();
+  if (!member) return null;
+  const { results: sizes } = await db
+    .prepare(
+      `SELECT rowid AS position, size FROM session_entries
+       WHERE session_id = ? AND removed_at IS NULL AND kind <> 'brief' ORDER BY rowid`,
+    )
+    .bind(sessionId)
+    .all<{ position: number; size: number }>();
+  const ranges: { from: number; to: number }[] = [];
+  let used = 0;
+  for (const row of sizes) {
+    const current = ranges.at(-1);
+    if (!current || used + row.size > SESSION_LIMITS.scanBytes) {
+      ranges.push({ from: row.position, to: row.position });
+      used = row.size;
+    } else {
+      current.to = row.position;
+      used += row.size;
+    }
+  }
+  const parts = Math.max(ranges.length, 1);
+  if (!Number.isInteger(part) || part < 1 || part > parts) return null;
+  const range = ranges[part - 1];
+  const entries: Entry[] = [];
+  if (range) {
+    const { results } = await db
+      .prepare(
+        `SELECT ${ENTRY_COLUMNS} ${ENTRY_FROM}
+         WHERE e.session_id = ? AND e.removed_at IS NULL AND e.kind <> 'brief'
+           AND e.rowid >= ? AND e.rowid <= ? ORDER BY e.rowid`,
+      )
+      .bind(sessionId, range.from, range.to)
+      .all<EntryRow>();
+    for (const row of results) entries.push(await toEntry(secret, sessionId, uid, row));
+  }
+  const brief = part === 1 ? (await currentBrief(db, secret, uid, sessionId)).brief : null;
+  const who = (e: Entry) => (e.mine ? 'you' : e.author ? `@${e.author}` : 'a member');
+  const lines = [
+    `# ${member.title}`,
+    '',
+    `Exported from Prompt share on ${iso(now).slice(0, 10)}${parts > 1 ? `, part ${String(part)} of ${String(parts)}` : ''}.`,
+    '',
+  ];
+  if (brief) {
+    lines.push('## Brief', '', `_By ${who(brief)}, ${brief.createdAt}_`, '', brief.text, '');
+  }
+  if (entries.length) lines.push('## Entries', '');
+  for (const e of entries) {
+    const heading = [
+      e.kind === 'note' ? '' : e.kind.charAt(0).toUpperCase() + e.kind.slice(1),
+      e.label,
+      `${who(e)}, ${e.createdAt}`,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    lines.push(`### ${heading}`, '');
+    const meta = [
+      `id ${e.id}`,
+      e.replyTo ? `reply to ${e.replyTo}` : '',
+      e.task ? `${e.task.status}${e.task.assignee ? `, assigned to @${e.task.assignee}` : ''}` : '',
+    ].filter(Boolean);
+    lines.push(`_${meta.join(' · ')}_`, '', e.text, '');
+  }
+  return { markdown: lines.join('\n'), part, parts, title: member.title };
 }
 
 /** Only the owner deletes a session, with every entry, for every member. */
@@ -563,6 +855,15 @@ export async function removeMember(
     .prepare("DELETE FROM session_members WHERE session_id = ? AND uid = ? AND role != 'owner'")
     .bind(sessionId, memberUid)
     .run();
+  if (meta.changes > 0) {
+    // Someone who left can't be assigned anything any more.
+    await db
+      .prepare(
+        'UPDATE session_entries SET assignee_uid = NULL WHERE session_id = ? AND assignee_uid = ?',
+      )
+      .bind(sessionId, memberUid)
+      .run();
+  }
   return meta.changes > 0;
 }
 

@@ -19,6 +19,7 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
     db.prepare('DELETE FROM shared_sessions WHERE owner_uid = ?').bind(uid),
     db.prepare('DELETE FROM session_entries WHERE author_uid = ?').bind(uid),
     db.prepare('DELETE FROM session_members WHERE uid = ?').bind(uid),
+    db.prepare('UPDATE session_entries SET assignee_uid = NULL WHERE assignee_uid = ?').bind(uid),
     db.prepare('DELETE FROM prompt_shares WHERE owner_uid = ?1 OR recipient_uid = ?1').bind(uid),
     db.prepare('DELETE FROM share_misses WHERE uid = ?').bind(uid),
     db.prepare('DELETE FROM share_locks WHERE uid = ?').bind(uid),
@@ -43,7 +44,7 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
       `SELECT (SELECT COUNT(*) FROM prompts WHERE owner_uid = ?1)
             + (SELECT COUNT(*) FROM shared_sessions WHERE owner_uid = ?1)
             + (SELECT COUNT(*) FROM session_members WHERE uid = ?1)
-            + (SELECT COUNT(*) FROM session_entries WHERE author_uid = ?1)
+            + (SELECT COUNT(*) FROM session_entries WHERE author_uid = ?1 OR assignee_uid = ?1)
             + (SELECT COUNT(*) FROM audit_events WHERE actor_user_id = ?1)
             + (SELECT COUNT(*) FROM web_sessions WHERE uid = ?1)
             + (SELECT COUNT(*) FROM profiles WHERE uid = ?1)
@@ -85,7 +86,7 @@ export async function exportUserData(
       // Every entry in sessions the user owns, and the user's own entries everywhere else.
       db
         .prepare(
-          `SELECT e.id, e.session_id, e.author_uid, e.client_id, e.kind, e.reply_to, e.label, e.iv, e.ciphertext, e.created_at
+          `SELECT e.id, e.session_id, e.author_uid, e.client_id, e.kind, e.reply_to, e.task_status, e.label, e.iv, e.ciphertext, e.created_at
          FROM session_entries e JOIN shared_sessions s ON s.id = e.session_id
          WHERE s.owner_uid = ?1 OR e.author_uid = ?1 ORDER BY e.created_at`,
         )
@@ -113,6 +114,7 @@ export async function exportUserData(
       writtenWith: row.client_id,
       kind: row.kind,
       replyTo: row.reply_to,
+      taskStatus: row.task_status,
       label: row.label,
       text: await decryptEntry(
         secret,

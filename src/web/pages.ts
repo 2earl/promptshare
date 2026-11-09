@@ -337,6 +337,54 @@ export interface EntryDraft {
   label: string;
   kind: EntryKind;
   replyTo: string;
+  assignee?: string;
+}
+
+export function sessionSearch(
+  sessionId: string,
+  title: string,
+  query: string,
+  result: { matches: Entry[]; searched: number; continueBefore: string | null },
+): string {
+  const rows = result.matches
+    .map(
+      (e) => `<article class="entry${e.mine ? '' : ' entry-other'}">
+<header><span>${e.kind === 'brief' ? '<span class="tag">Brief</span> ' : e.kind !== 'note' ? `<span class="tag">${KIND_NAME[e.kind]}</span> ` : ''}${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : who(e.author)} · ${esc(date(e.createdAt))}</span></header>
+<pre>${esc(e.text)}</pre>
+</article>`,
+    )
+    .join('');
+  return layout(
+    `Search: ${query}`,
+    `<p class="crumb"><a href="/sessions/${esc(sessionId)}">${esc(title)}</a></p>
+<h1>Search this session</h1>
+<form class="search" method="get" action="/sessions/${esc(sessionId)}/search" role="search">
+<label for="session-q">Words to find</label>
+<div class="search-row"><input id="session-q" name="q" type="search" required maxlength="200" value="${esc(query)}"><button class="button button-quiet" type="submit">Search</button></div>
+</form>
+<p class="muted">${String(result.matches.length)} found in ${String(result.searched)} ${result.searched === 1 ? 'entry' : 'entries'}${result.continueBefore ? ', the newest part of this session' : ''}.</p>
+${rows}
+${result.continueBefore ? `<p><a href="/sessions/${esc(sessionId)}/search?q=${encodeURIComponent(query)}&amp;before=${esc(result.continueBefore)}">Search older entries</a></p>` : ''}`,
+    { signedIn: true },
+    '/sessions',
+  );
+}
+
+export function exportParts(sessionId: string, title: string, parts: number): string {
+  const links = Array.from(
+    { length: parts },
+    (_, i) =>
+      `<li><a href="/sessions/${esc(sessionId)}/export?part=${String(i + 1)}">Part ${String(i + 1)} of ${String(parts)}</a></li>`,
+  ).join('');
+  return layout(
+    'Download as Markdown',
+    `<p class="crumb"><a href="/sessions/${esc(sessionId)}">${esc(title)}</a></p>
+<h1>Download as Markdown</h1>
+<p class="lede">This session is large, so it comes in ${String(parts)} files, oldest entries first. The brief is in part 1.</p>
+<ul class="people">${links}</ul>`,
+    { signedIn: true },
+    '/sessions',
+  );
 }
 
 const KIND_NAME: Record<EntryKind, string> = {
@@ -409,8 +457,9 @@ export function sessionView(
   const entries = session.entries
     .map(
       (e) => `<article class="entry${e.mine ? '' : ' entry-other'}" id="entry-${esc(e.id)}">
-<header><span>${e.kind !== 'note' && e.kind !== 'brief' ? `<span class="tag">${KIND_NAME[e.kind]}</span> ` : ''}${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : who(e.author)} · ${esc(date(e.createdAt))}${e.replyTo ? ` · <a class="text-link" href="#entry-${esc(e.replyTo)}">in reply</a>` : ''}</span>
-<span class="entry-actions">${canReply ? `<a class="text-link" href="/sessions/${esc(session.id)}?reply=${esc(e.id)}#text">Reply</a>` : ''}
+<header><span>${e.kind !== 'note' && e.kind !== 'brief' ? `<span class="tag">${KIND_NAME[e.kind]}${e.task ? ` · ${e.task.status === 'done' ? 'done' : 'open'}` : ''}</span> ` : ''}${e.task?.assignedToYou ? 'for you · ' : e.task?.assignee ? `for @${esc(e.task.assignee)} · ` : ''}${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : who(e.author)} · ${esc(date(e.createdAt))}${e.replyTo ? ` · <a class="text-link" href="#entry-${esc(e.replyTo)}">in reply</a>` : ''}</span>
+<span class="entry-actions">${canReply && e.task ? `<form method="post" action="/sessions/${esc(session.id)}/entries/${esc(e.id)}/task"><input type="hidden" name="status" value="${e.task.status === 'done' ? 'open' : 'done'}"><button class="link-button" type="submit">${e.task.status === 'done' ? 'Reopen' : 'Mark done'}</button></form>` : ''}
+${canReply ? `<a class="text-link" href="/sessions/${esc(session.id)}?reply=${esc(e.id)}#text">Reply</a>` : ''}
 ${e.mine ? '' : reportLink(session.id, e.id)}
 ${e.mine || session.role === 'owner' ? `<form method="post" action="/sessions/${esc(session.id)}/entries/${esc(e.id)}/delete"><button class="link-button danger" type="submit">Delete</button></form>` : ''}</span></header>
 <pre>${esc(e.text)}</pre>
@@ -468,12 +517,31 @@ ${draft.replyTo ? `<p class="muted">Replying to <a class="text-link" href="#entr
 <textarea id="text" name="text" rows="6" required class="mono">${esc(draft.text)}</textarea>
 <label for="kind">Kind</label>
 <select id="kind" name="kind">${ENTRY_KINDS.map((k) => `<option value="${k}"${draft.kind === k ? ' selected' : ''}>${KIND_NAME[k]}</option>`).join('')}</select>
+${
+  session.members.some((m) => m.handle)
+    ? `<label for="assignee">Assign to <span class="optional">for a task, optional</span></label>
+<select id="assignee" name="assignee"><option value="">Nobody</option>${session.members
+        .filter((m) => m.handle)
+        .map(
+          (m) =>
+            `<option value="${esc(m.handle ?? '')}"${draft.assignee === m.handle ? ' selected' : ''}>${m.you ? 'You' : `@${esc(m.handle ?? '')}`}</option>`,
+        )
+        .join('')}</select>`
+    : ''
+}
 <label for="label">Label <span class="optional">optional</span></label>
 <input id="label" name="label" maxlength="${String(SESSION_LIMITS.label)}" value="${esc(draft.label)}">
 <p><button class="button" type="submit">Add entry</button></p>
 </form>`
     : ''
 }
+<div class="actions">
+<form class="search" method="get" action="/sessions/${esc(session.id)}/search" role="search">
+<label for="session-q">Search this session</label>
+<div class="search-row"><input id="session-q" name="q" type="search" required maxlength="200"><button class="button button-quiet" type="submit">Search</button></div>
+</form>
+<a class="text-link" href="/sessions/${esc(session.id)}/export">Download as Markdown</a>
+</div>
 ${entries || '<p class="empty">No entries yet. Ask your assistant to save where your conversation stands, or add one above.</p>'}
 ${session.more && last ? `<p><a href="/sessions/${esc(session.id)}?before=${esc(last.id)}">Older entries</a></p>` : ''}
 ${sharing}

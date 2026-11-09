@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { SCOPES } from '../src/caller';
 import { credentialIn } from '../src/credentials';
 import { ftsQuery } from '../src/prompts';
+import { removeMember } from '../src/sessions';
+import { deleteUserData } from '../src/account';
 import {
   ALL,
   addMember,
@@ -62,9 +64,11 @@ describe('entry points', () => {
       'save_prompt',
       'save_to_session',
       'search_prompts',
+      'search_session',
       'unpublish_prompt',
       'update_prompt',
       'update_session_brief',
+      'update_task',
     ]);
     // Read-only tools need `read` at the gateway; session tools name `state` themselves.
     for (const name of ['search_prompts', 'get_prompt']) {
@@ -77,6 +81,8 @@ describe('entry points', () => {
       'save_to_session',
       'update_session_brief',
       'rename_session',
+      'update_task',
+      'search_session',
       'delete_session',
     ]) {
       expect(byName.get(name)?._meta).toEqual({ '2earl/scope': SCOPES.state });
@@ -557,5 +563,118 @@ describe('sessions: brief, kinds, replies, new entries (phase S2)', () => {
     const theirs = await publicPrompt('user-2', 'Theirs', 'Their text');
     const refused = await tool(client, 'create_session', { title: 'T', fromPromptId: theirs });
     expect(refused.texts[0]).toContain('Copy someone else’s prompt first');
+  });
+});
+
+describe('sessions: tasks and search (phase S3)', () => {
+  async function team() {
+    const owner = await connect('user-1');
+    const id = parsed<{ id: string }>(
+      (await tool(owner, 'create_session', { title: 'Team' })).texts,
+    ).id;
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO profiles (uid, handle, created_at, updated_at) VALUES ('user-1', 'ada', 1, 1), ('user-2', 'bo', 1, 1), ('user-3', 'cy', 1, 1)",
+      ),
+    ]);
+    await addMember(id, 'user-2', 'editor');
+    await addMember(id, 'user-3', 'viewer');
+    return { owner, id };
+  }
+  const savedId = (texts: string[]) => parsed<{ saved: string }>(texts).saved;
+
+  it('assigns tasks to members, marks them done, and filters by status', async () => {
+    const { owner, id } = await team();
+    const task = savedId(
+      (
+        await tool(owner, 'save_to_session', {
+          id,
+          text: 'Book flights',
+          kind: 'task',
+          assignee: '@Bo',
+        })
+      ).texts,
+    );
+    const bo = await connect('user-2');
+    expect((await tool(bo, 'load_session', { id })).texts[1]).toContain('open · assigned to you');
+    expect(
+      (await tool(owner, 'save_to_session', { id, text: 'x', kind: 'task', assignee: 'nobody' }))
+        .texts[0],
+    ).toContain('No member of this session has that handle.');
+    expect(
+      (await tool(owner, 'save_to_session', { id, text: 'x', kind: 'note', assignee: 'bo' }))
+        .texts[0],
+    ).toContain('Only a task can be assigned.');
+
+    expect((await tool(bo, 'update_task', { id, entry: task, status: 'done' })).error).toBe(false);
+    expect((await tool(owner, 'load_session', { id, status: 'open' })).texts).toHaveLength(1);
+    const done = await tool(owner, 'load_session', { id, status: 'done' });
+    expect(done.texts[1]).toContain('done · assigned to @bo');
+    expect((await tool(owner, 'update_task', { id, entry: task, assignee: '' })).error).toBe(false);
+    expect((await tool(owner, 'load_session', { id })).texts[1]).not.toContain('assigned');
+
+    const viewer = await tool(await connect('user-3'), 'update_task', {
+      id,
+      entry: task,
+      status: 'open',
+    });
+    expect(viewer.texts[0]).toContain('read this session but not change it');
+    const note = savedId((await tool(owner, 'save_to_session', { id, text: 'a note' })).texts);
+    expect((await tool(owner, 'update_task', { id, entry: note, status: 'done' })).error).toBe(
+      true,
+    );
+  });
+
+  it('unassigns someone who leaves, or whose account is deleted', async () => {
+    const { owner, id } = await team();
+    await tool(owner, 'save_to_session', { id, text: 't1', kind: 'task', assignee: 'bo' });
+    await removeMember(env.DB, 'user-2', id, 'user-2');
+    expect(await count('session_entries', 'assignee_uid IS NOT NULL')).toBe(0);
+    await addMember(id, 'user-2', 'editor');
+    await tool(owner, 'save_to_session', { id, text: 't2', kind: 'task', assignee: 'bo' });
+    await deleteUserData(env.DB, 'user-2', 1);
+    expect(await count('session_entries', 'assignee_uid IS NOT NULL')).toBe(0);
+  });
+
+  it('finds entries holding all the words, including the current brief, case-insensitively', async () => {
+    const { owner, id } = await team();
+    await tool(owner, 'update_session_brief', { id, text: 'We chose Lisbon for the offsite.' });
+    await tool(owner, 'save_to_session', { id, text: 'Hotel in LISBON booked', kind: 'decision' });
+    await tool(owner, 'save_to_session', { id, text: 'Lisbon or Porto?', kind: 'question' });
+    await tool(owner, 'save_to_session', { id, text: 'Unrelated' });
+    const found = await tool(owner, 'search_session', { id, query: 'lisbon' });
+    expect(parsed<{ matches: number; continueBefore: null }>(found.texts)).toMatchObject({
+      matches: 3,
+      continueBefore: null,
+    });
+    expect(found.texts[1]).toContain('Lisbon or Porto?');
+    expect(found.texts.at(-1)).toMatch(/BRIEF/);
+    const both = await tool(owner, 'search_session', { id, query: 'lisbon hotel' });
+    expect(parsed<{ matches: number }>(both.texts).matches).toBe(1);
+    expect(
+      (await tool(await connect('user-4'), 'search_session', { id, query: 'lisbon' })).error,
+    ).toBe(true);
+  });
+
+  it('reads at most 512 KB per search and says where to go on', async () => {
+    const { owner, id } = await team();
+    const big = 'filler '.repeat(9000); // 63 KB
+    await tool(owner, 'save_to_session', { id, text: `needle first ${big}` });
+    for (let i = 0; i < 9; i++) await tool(owner, 'save_to_session', { id, text: big });
+    const first = await tool(owner, 'search_session', { id, query: 'needle' });
+    const page1 = parsed<{ matches: number; entriesSearched: number; continueBefore: string }>(
+      first.texts,
+    );
+    expect(page1.matches).toBe(0);
+    expect(page1.entriesSearched).toBe(8);
+    const rest = await tool(owner, 'search_session', {
+      id,
+      query: 'needle',
+      before: page1.continueBefore,
+    });
+    expect(parsed<{ matches: number; continueBefore: null }>(rest.texts)).toMatchObject({
+      matches: 1,
+      continueBefore: null,
+    });
   });
 });
