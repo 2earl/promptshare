@@ -53,6 +53,9 @@ export async function count(table: string, where = '1 = 1', ...params: unknown[]
 export async function resetDatabase(): Promise<void> {
   await env.DB.batch(
     [
+      'prompt_shares',
+      'share_misses',
+      'share_locks',
       'invitations',
       'moderation_decisions',
       'messages',

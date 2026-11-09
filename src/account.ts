@@ -19,6 +19,9 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
     db.prepare('DELETE FROM shared_sessions WHERE owner_uid = ?').bind(uid),
     db.prepare('DELETE FROM session_entries WHERE author_uid = ?').bind(uid),
     db.prepare('DELETE FROM session_members WHERE uid = ?').bind(uid),
+    db.prepare('DELETE FROM prompt_shares WHERE owner_uid = ?1 OR recipient_uid = ?1').bind(uid),
+    db.prepare('DELETE FROM share_misses WHERE uid = ?').bind(uid),
+    db.prepare('DELETE FROM share_locks WHERE uid = ?').bind(uid),
     db.prepare('DELETE FROM prompts WHERE owner_uid = ?').bind(uid),
     db.prepare('DELETE FROM web_sessions WHERE uid = ?').bind(uid),
     db.prepare('DELETE FROM profiles WHERE uid = ?').bind(uid),
@@ -45,6 +48,9 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
             + (SELECT COUNT(*) FROM web_sessions WHERE uid = ?1)
             + (SELECT COUNT(*) FROM profiles WHERE uid = ?1)
             + (SELECT COUNT(*) FROM consents WHERE uid = ?1)
+            + (SELECT COUNT(*) FROM prompt_shares WHERE owner_uid = ?1 OR recipient_uid = ?1)
+            + (SELECT COUNT(*) FROM share_misses WHERE uid = ?1)
+            + (SELECT COUNT(*) FROM share_locks WHERE uid = ?1)
             + (SELECT COUNT(*) FROM moderation_decisions WHERE affected_uid = ?1)
             + (SELECT COUNT(*) FROM invitations WHERE created_by = ?1 OR used_by = ?1)
             + (SELECT COUNT(*) FROM messages WHERE uid = ?1) AS n`,
@@ -161,6 +167,27 @@ export async function exportUserData(
       text: row.body,
       sentAt: iso(row.created_at as number),
     })),
+    // The addresses you shared your prompts with, and prompts others shared with you.
+    promptShares: (
+      await db
+        .prepare(
+          'SELECT prompt_id, email, created_at FROM prompt_shares WHERE owner_uid = ? ORDER BY created_at',
+        )
+        .bind(uid)
+        .all()
+    ).results.map((row) => ({
+      prompt: row.prompt_id,
+      sharedWith: row.email,
+      sharedAt: iso(row.created_at as number),
+    })),
+    promptsSharedWithYou: (
+      await db
+        .prepare(
+          'SELECT prompt_id, created_at FROM prompt_shares WHERE recipient_uid = ? ORDER BY created_at',
+        )
+        .bind(uid)
+        .all()
+    ).results.map((row) => ({ prompt: row.prompt_id, sharedAt: iso(row.created_at as number) })),
     consents: (
       await db
         .prepare('SELECT kind, consented, version, decided_at FROM consents WHERE uid = ?')

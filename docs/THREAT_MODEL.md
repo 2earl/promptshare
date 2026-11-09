@@ -35,6 +35,8 @@ assistant path is the gateway's
 | Joining a session without an invitation | Single-use, hashed, 7-day links; joining needs a signed-in person pressing **Join** (CSRF-protected); the owner sees and removes members | Tests |
 | An invitation link leaks | Single use; the owner sees who joined and can remove them and revoke unused links | Tests |
 | User enumeration | No directory or search of users; handles appear only on public prompts | Review |
+| Enumeration through sharing by email (S1): "does this address have an account?" | Accepted in part (owner, 2026-11-09): unknown addresses are refused. 3 within an hour lock sharing for 10 minutes, doubling; 20 a day lock it for the day; while locked every address is refused; 200 shares a day. Checking a few addresses stays possible | Tests: lock, doubling, daily lock, refusal while locked |
+| Injected text makes an assistant share a private prompt with an attacker | Sharing is website-only (D7); no MCP tool shares | Test: no share tool |
 | Abuse of the report form (spam, fake reports) | Rate limits per network; no account needed by law, so reports are queued, never acted on automatically | Tests |
 | Unlawful public content | Notice and action, statements of reasons, Art. 18 procedure (LEGAL.md) | Tests: report → decision → statement → contest → reversal |
 | Someone else uses the moderation view | Only `OWNER_UID`, and only with a second factor verified through login in the last 15 minutes; 404 for everyone else; forms refuse a stale second factor | Tests; each check broken on purpose is caught |
@@ -63,5 +65,6 @@ assistant path is the gateway's
 
   The website and the tool descriptions say so.
 - **Moderators read reported content,** including private session entries a member reported.
+- **Sharing a prompt shows whether an address has a 2earl account,** within the limits above.
 - **Members can copy what they read.** Removing someone from a session doesn't remove what they
   saw.

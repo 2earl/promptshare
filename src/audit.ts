@@ -6,6 +6,8 @@ export type AuditEvent =
   | 'prompt.unpublished'
   | 'prompt.deleted'
   | 'prompt.copied'
+  | 'prompt.shared'
+  | 'prompt.unshared'
   | 'session.created'
   | 'session.entry_added'
   | 'session.entry_refused'

@@ -17,6 +17,7 @@ import {
   type Action,
 } from '../moderation';
 import { ProfileError, handleOf, setHandle } from '../profiles';
+import { ShareError, dismissShare, listShares, sharePrompt, unsharePrompt } from '../shares';
 import {
   PromptError,
   copyPrompt,
@@ -27,6 +28,7 @@ import {
   searchPrompts,
   unpublishPrompt,
   updatePrompt,
+  type Prompt,
 } from '../prompts';
 import {
   SessionError,
@@ -275,19 +277,75 @@ export function createApp(now: () => number) {
       404,
     );
 
+  /** The author's page of one prompt, with its share section. */
+  async function editorPage(
+    c: AppContext,
+    uid: string,
+    prompt: Prompt,
+    share: { error: string | null; sharedWith: string | null } = { error: null, sharedWith: null },
+  ) {
+    return pages.promptEditor(
+      { kind: 'edit', prompt },
+      { ...prompt, tags: prompt.tags.join(', '), models: prompt.models.join(', ') },
+      null,
+      { shares: await listShares(c.env.DB, uid, prompt.id), ...share },
+    );
+  }
+
   app.get('/prompts/:id', async (c) => {
     const uid = requireUser(c);
     if (typeof uid !== 'string') return uid;
     const prompt = await ownPrompt(c, uid);
     if (!prompt) return notFound(c, 'prompt');
+    return html(c, await editorPage(c, uid, prompt));
+  });
+
+  // Sharing with people (DESIGN §4.1): only here, never through an assistant (D7).
+  app.post('/prompts/:id/shares', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const prompt = await ownPrompt(c, uid);
+    if (!prompt) return notFound(c, 'prompt');
+    const email = text((await c.req.parseBody()).email);
+    try {
+      const share = await sharePrompt(c.env, uid, c.get('now'), prompt.id, email);
+      if (!share) return notFound(c, 'prompt');
+      const fresh = (await ownPrompt(c, uid)) ?? prompt;
+      return html(c, await editorPage(c, uid, fresh, { error: null, sharedWith: share.email }));
+    } catch (error) {
+      if (!(error instanceof ShareError)) throw error;
+      return html(
+        c,
+        await editorPage(c, uid, prompt, { error: error.message, sharedWith: null }),
+        400,
+      );
+    }
+  });
+
+  app.post('/prompts/:id/shares/:share/remove', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const id = c.req.param('id');
+    if (!(await unsharePrompt(c.env.DB, uid, c.get('now'), id, c.req.param('share'))))
+      return notFound(c, 'share');
+    return c.redirect(`/prompts/${id}`, 303);
+  });
+
+  app.get('/shared', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const query = c.req.query('q') ?? '';
     return html(
       c,
-      pages.promptEditor(
-        { kind: 'edit', prompt },
-        { ...prompt, tags: prompt.tags.join(', '), models: prompt.models.join(', ') },
-        null,
-      ),
+      pages.sharedList(await searchPrompts(c.env.DB, uid, { query, scope: 'shared' }), query),
     );
+  });
+
+  app.post('/p/:id/dismiss', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    if (!(await dismissShare(c.env.DB, uid, c.req.param('id')))) return notFound(c, 'prompt');
+    return c.redirect('/shared', 303);
   });
 
   app.post('/prompts/:id', async (c) => {
