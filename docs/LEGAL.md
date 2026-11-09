@@ -89,7 +89,7 @@ Drafts are written in phase P2 and reviewed before launch.
 | 4 | Review of this list and the §5 texts | **Done** by Claude, 2026-11-09 (§8), by the owner's decision that no lawyer is available. Not legal advice; the owner carries the legal risk |
 | 5 | Cloudflare data processing agreement | **Open:** confirm it applies to the account (it is part of Cloudflare's self-serve terms) |
 | 6 | Records of processing (GDPR Art. 30) | **Open:** a short document for login, the gateway and Prompt share, written with phase P2 |
-| 7 | Terms and privacy policy on 2earl.com cover Prompt share; imprint links the contact form | **Done:** 2earl/website#6 |
+| 7 | Terms and privacy policy on 2earl.com cover Prompt share; imprint links the contact form | **Open:** 2earl/website#6, waiting for merge. Until it is merged, 2earl.com doesn't describe Prompt share |
 
 ## 8. Review, 2026-11-09
 

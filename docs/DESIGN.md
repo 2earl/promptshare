@@ -281,7 +281,7 @@ login's "Download your data" includes it.
 | P2 / C1 | Website on promptshare.cc: sign-in with login (CIMD client, PKCE), managing your own prompts and sessions, how-to-connect page, contact form (the imprint's second channel), report form (DSA Art. 16), owner notified by email | Built |
 | P2 / C2a | Handle; publishing after a preview; public prompts to explore, read, copy and report; invitation links (single use, 7 days, HMAC only), members, leaving; assistants see authors' handles | Built |
 | P2 / C2b | Moderation view at `/admin`: the owner's account (`OWNER_UID`) with a second factor verified through login in the last 15 minutes (`acr_values=urn:2earl:aal2`). Restrict, remove, suspend publishing, threat to life or safety, reverse; statements of reasons at `/decisions/:id`; contest once per decision; report links on entries; ~6-month retention, threat evidence kept | Built |
-| P2 / D | Terms and privacy policy on 2earl.com cover Prompt share; the imprint links the contact form | Done (2earl/website#6) |
+| P2 / D | Terms and privacy policy on 2earl.com cover Prompt share; the imprint links the contact form | Open: 2earl/website#6 |
 | P2 / C2c | Explicit consent for sensitive data (asked once, withdrawable); owner reminded of messages open 30 minutes; reporters emailed receipt and decision when the owner turns it on (Workers Paid) | Built |
 | P3 | MCP prompts primitive through the gateway; prompt versions | |
 
