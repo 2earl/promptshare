@@ -67,10 +67,14 @@ export function clientMetadata(env: Env) {
 }
 
 /** Starts a sign-in: returns the cookie value to set and the URL to send the browser to. */
+/** `acr_values` asking login for a recent second factor (2earl/login GATEWAY_INTEGRATION §4.1). */
+export const ACR_AAL2 = 'urn:2earl:aal2';
+
 export async function startSignIn(
   env: Env,
   now: number,
   returnTo: string | null,
+  options: { secondFactor?: boolean } = {},
 ): Promise<{ cookieValue: string; location: string }> {
   const cookieValue = randomToken();
   const state = randomToken();
@@ -96,6 +100,7 @@ export async function startSignIn(
     code_challenge: await pkceChallenge(verifier),
     code_challenge_method: 'S256',
     resource: env.SITE_ORIGIN,
+    ...(options.secondFactor ? { acr_values: ACR_AAL2 } : {}),
   });
   return { cookieValue, location: `${env.AUTHORIZATION_SERVER}/authorize?${query.toString()}` };
 }
@@ -104,7 +109,7 @@ export async function startSignIn(
 interface Validated {
   audience: string | string[];
   scope: string[];
-  props: { uid: string };
+  props: { uid: string; aal2At?: number | null };
 }
 interface AuthServer {
   fetch(request: Request): Promise<Response>;
@@ -128,7 +133,7 @@ export async function finishSignIn(
     code: string | null;
     iss: string | null;
   },
-): Promise<{ uid: string; returnTo: string | null }> {
+): Promise<{ uid: string; aal2At: number | null; returnTo: string | null }> {
   if (!input.cookieValue || !input.state || !input.code) throw new SignInError('incomplete');
   // RFC 9207: the response says which server issued it.
   if (input.iss !== null && input.iss !== env.AUTHORIZATION_SERVER) throw new SignInError('issuer');
@@ -169,10 +174,19 @@ export async function finishSignIn(
   if (!validated || !audience.includes(env.SITE_ORIGIN) || !validated.scope.includes(SCOPE)) {
     throw new SignInError('validation');
   }
-  return { uid: validated.props.uid, returnTo: tx.return_to };
+  return {
+    uid: validated.props.uid,
+    aal2At: validated.props.aal2At ?? null,
+    returnTo: tx.return_to,
+  };
 }
 
-export async function createWebSession(env: Env, now: number, uid: string): Promise<string> {
+export async function createWebSession(
+  env: Env,
+  now: number,
+  uid: string,
+  aal2At: number | null = null,
+): Promise<string> {
   const cookieValue = randomToken();
   await env.DB.batch([
     env.DB.prepare('DELETE FROM web_sessions WHERE expires_at < ? OR last_seen_at < ?').bind(
@@ -180,13 +194,14 @@ export async function createWebSession(env: Env, now: number, uid: string): Prom
       now - SESSION_IDLE_SECONDS,
     ),
     env.DB.prepare(
-      'INSERT INTO web_sessions (id_hash, uid, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO web_sessions (id_hash, uid, created_at, last_seen_at, expires_at, aal2_at) VALUES (?, ?, ?, ?, ?, ?)',
     ).bind(
       await hmac(env.SESSION_PEPPER, `session:${cookieValue}`),
       uid,
       now,
       now,
       now + SESSION_ABSOLUTE_SECONDS,
+      aal2At,
     ),
   ]);
   return cookieValue;
@@ -200,17 +215,17 @@ export async function currentSession(
   if (!cookieValue) return null;
   const idHash = await hmac(env.SESSION_PEPPER, `session:${cookieValue}`);
   const row = await env.DB.prepare(
-    'SELECT uid, last_seen_at, expires_at FROM web_sessions WHERE id_hash = ?',
+    'SELECT uid, last_seen_at, expires_at, aal2_at FROM web_sessions WHERE id_hash = ?',
   )
     .bind(idHash)
-    .first<{ uid: string; last_seen_at: number; expires_at: number }>();
+    .first<{ uid: string; last_seen_at: number; expires_at: number; aal2_at: number | null }>();
   if (!row || row.expires_at < now || row.last_seen_at < now - SESSION_IDLE_SECONDS) return null;
   if (now - row.last_seen_at > TOUCH_INTERVAL_SECONDS) {
     await env.DB.prepare('UPDATE web_sessions SET last_seen_at = ? WHERE id_hash = ?')
       .bind(now, idHash)
       .run();
   }
-  return { idHash, uid: row.uid };
+  return { idHash, uid: row.uid, aal2At: row.aal2_at };
 }
 
 export async function endWebSession(env: Env, session: WebSession): Promise<void> {

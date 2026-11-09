@@ -5,6 +5,8 @@ import type { Context } from 'hono';
 export interface WebSession {
   idHash: string;
   uid: string;
+  /** When login last verified the user's second factor for this sign-in, or null. */
+  aal2At: number | null;
 }
 
 export type WebEnv = Env & {

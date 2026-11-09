@@ -3,6 +3,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { deleteUserData, exportUserData } from './account';
 import { AUDIT_RETENTION_SECONDS } from './audit';
 import { callerFrom } from './caller';
+import { moderationCleanup } from './moderation';
 import { buildServer } from './tools';
 import { createApp } from './web/app';
 
@@ -44,6 +45,7 @@ export default {
   },
 
   async scheduled(_controller, env): Promise<void> {
+    await moderationCleanup(env.DB, now());
     await env.DB.prepare('DELETE FROM audit_events WHERE at < ?')
       .bind(now() - AUDIT_RETENTION_SECONDS)
       .run();

@@ -390,7 +390,9 @@ describe('shared sessions', () => {
 
 describe('authors (phase C2)', () => {
   it('shows assistants the author’s handle on public prompts and other members’ entries', async () => {
-    await env.DB.prepare("INSERT INTO profiles VALUES ('user-2', 'grace', 1, 1)").run();
+    await env.DB.prepare(
+      "INSERT INTO profiles (uid, handle, created_at, updated_at) VALUES ('user-2', 'grace', 1, 1)",
+    ).run();
     const theirs = await publicPrompt('user-2', 'Haiku helper', 'Write a haiku.');
     const client = await connect('user-1');
     const found = parsed<{ id: string; author: string }[]>(

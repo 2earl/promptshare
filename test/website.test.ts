@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { deleteUserData, exportUserData } from '../src/account';
 import { acceptInvitation } from '../src/sessions';
 import { safeReturnTo } from '../src/web/http';
+import { moderationCleanup } from '../src/moderation';
 import { mimeMessage, notifyOwner } from '../src/web/messages';
 import { addMember, count, resetDatabase } from './helpers';
 
@@ -12,7 +13,9 @@ const SAME_ORIGIN = { Origin: ORIGIN, 'Sec-Fetch-Site': 'same-origin' };
 beforeEach(async () => {
   await resetDatabase();
   await env.DB.batch(
-    ['signin_tx', 'web_sessions', 'messages'].map((t) => env.DB.prepare(`DELETE FROM ${t}`)),
+    ['signin_tx', 'web_sessions', 'messages', 'moderation_decisions'].map((t) =>
+      env.DB.prepare(`DELETE FROM ${t}`),
+    ),
   );
 });
 
@@ -598,5 +601,214 @@ describe('invitations and members', () => {
     await deleteUserData(env.DB, 'user-1', 10);
     expect(await count('profiles')).toBe(0);
     expect(await count('invitations')).toBe(0);
+  });
+});
+
+// ---- Phase C2b: moderation ------------------------------------------------------------------
+
+describe('moderation', () => {
+  /** The owner (OWNER_UID in vitest.config.ts) after a second factor verified through login. */
+  const ownerCookie = async () => (await signIn('owner-uid!aal2')).cookie;
+
+  async function reportedPrompt() {
+    const author = await withHandle('user-2', 'author');
+    const path =
+      (
+        await post('/prompts', { title: 'Bad prompt', body: 'Something against the terms' }, author)
+      ).headers.get('Location') ?? '';
+    const id = path.split('/').at(-1) ?? '';
+    await post(`${path}/publish`, {}, author);
+    await post('/report', {
+      contentUrl: `https://promptshare.cc/p/${id}`,
+      category: 'terms',
+      body: 'It breaks the rules.',
+      name: 'Rita Reporter',
+      email: 'rita@example.com',
+      goodFaith: 'yes',
+    });
+    const report = await env.DB.prepare("SELECT id FROM messages WHERE kind = 'report'").first<{
+      id: string;
+    }>();
+    return { author, id, reportId: report?.id ?? '' };
+  }
+
+  it('is only for the owner, after a recent second factor verified through login', async () => {
+    expect((await get('/admin')).headers.get('Location')).toBe('/signin?admin=1&return=%2Fadmin');
+    const start = await get('/signin?admin=1&return=%2Fadmin');
+    expect(start.headers.get('Location')).toContain('acr_values=urn%3A2earl%3Aaal2');
+
+    expect((await get('/admin', (await signIn('user-2!aal2')).cookie)).status).toBe(404);
+    // The owner without a second factor: sent to sign in again, asking for it.
+    expect((await get('/admin', (await signIn('owner-uid')).cookie)).headers.get('Location')).toBe(
+      '/signin?admin=1&return=%2Fadmin',
+    );
+    const owner = await ownerCookie();
+    expect((await get('/admin', owner)).status).toBe(200);
+
+    // Too long ago: asked again, and forms refuse.
+    await env.DB.prepare("UPDATE web_sessions SET aal2_at = 1 WHERE uid = 'owner-uid'").run();
+    expect((await get('/admin', owner)).status).toBe(302);
+    expect(
+      (await post('/admin/messages/x/decide', { action: 'none', explanation: 'x' }, owner)).status,
+    ).toBe(404);
+  });
+
+  it('decides on a report: the content goes, the author gets reasons, the reporter an email to send', async () => {
+    const { author, id, reportId } = await reportedPrompt();
+    const owner = await ownerCookie();
+    expect(await (await get('/admin', owner)).text()).toContain('It breaks the rules.');
+    const page = await (await get(`/admin/messages/${reportId}`, owner)).text();
+    expect(page).toContain('Something against the terms');
+    expect(page).toContain('@author');
+
+    const missingLaw = await post(
+      `/admin/messages/${reportId}/decide`,
+      { action: 'remove', ground: 'illegal', law: '', explanation: 'x' },
+      owner,
+    );
+    expect(await missingLaw.text()).toContain('Name the law');
+
+    await post(
+      `/admin/messages/${reportId}/decide`,
+      {
+        action: 'remove',
+        ground: 'terms',
+        explanation: 'The prompt asks for something the terms forbid.',
+      },
+      owner,
+    );
+    expect(
+      await count('prompts', "id = ? AND status = 'removed' AND visibility = 'private'", id),
+    ).toBe(1);
+    expect(await count('messages', 'id = ? AND closed_at IS NOT NULL', reportId)).toBe(1);
+    expect((await get(`/p/${id}`, (await signIn('user-3')).cookie)).status).toBe(404);
+
+    const decided = await (await get(`/admin/messages/${reportId}`, owner)).text();
+    expect(decided).toContain('mailto:rita%40example.com');
+
+    const account = await (await get('/account', author)).text();
+    const decisionPath = /href="(\/decisions\/[0-9a-f-]+)"/.exec(account)?.[1] ?? '';
+    const statement = await (await get(decisionPath, author)).text();
+    expect(statement).toContain('The prompt asks for something the terms forbid.');
+    expect(statement).toContain('A report from someone else');
+    expect(statement).toContain('No. A person reviewed the content');
+    expect((await get(decisionPath, (await signIn('user-3')).cookie)).status).toBe(404);
+  });
+
+  it('takes a contest once, and a reversal restores the content', async () => {
+    const { author, id, reportId } = await reportedPrompt();
+    const owner = await ownerCookie();
+    await post(
+      `/admin/messages/${reportId}/decide`,
+      { action: 'restrict', ground: 'terms', explanation: 'Restricted.' },
+      owner,
+    );
+    const decision = await env.DB.prepare('SELECT id FROM moderation_decisions').first<{
+      id: string;
+    }>();
+    const path = `/decisions/${decision?.id ?? ''}`;
+    await post(`${path}/contest`, { body: 'It was satire.' }, author);
+    await post(`${path}/contest`, { body: 'Again.' }, author);
+    expect(await count('messages', "kind = 'appeal'")).toBe(1);
+    expect(await (await get(path, author)).text()).toContain('You contested this decision');
+
+    const appeal = await env.DB.prepare("SELECT id FROM messages WHERE kind = 'appeal'").first<{
+      id: string;
+    }>();
+    const page = await (await get(`/admin/messages/${appeal?.id ?? ''}`, owner)).text();
+    expect(page).toContain('It was satire.');
+    expect(page).toContain('The decision contested');
+    await post(
+      `/admin/messages/${appeal?.id ?? ''}/decide`,
+      { action: 'reverse', explanation: 'On review, it is satire.' },
+      owner,
+    );
+    expect(
+      await count('prompts', "id = ? AND status = 'active' AND visibility = 'private'", id),
+    ).toBe(1);
+    expect(await (await get('/account', author)).text()).toContain('Reverse an earlier decision');
+  });
+
+  it('removes a reported session entry for everyone, assistants included', async () => {
+    const owner = await withHandle('user-1', 'ses-owner');
+    const path = (await post('/sessions', { title: 'S' }, owner)).headers.get('Location') ?? '';
+    const sessionId = path.split('/').at(-1) ?? '';
+    await addMember(sessionId, 'user-2', 'editor');
+    const member = await withHandle('user-2', 'member');
+    await post(`${path}/entries`, { text: 'abusive text' }, member);
+    const entry = await env.DB.prepare('SELECT id FROM session_entries').first<{ id: string }>();
+    const ownerPage = await (await get(path, owner)).text();
+    expect(ownerPage).toContain(
+      encodeURIComponent(`https://promptshare.cc/sessions/${sessionId}/entries/${entry?.id ?? ''}`),
+    );
+
+    await post('/report', {
+      contentUrl: `https://promptshare.cc/sessions/${sessionId}/entries/${entry?.id ?? ''}`,
+      category: 'illegal',
+      body: 'Insult.',
+      name: 'Ses Owner',
+      email: 'o@example.com',
+      goodFaith: 'yes',
+    });
+    const report = await env.DB.prepare("SELECT id FROM messages WHERE kind = 'report'").first<{
+      id: string;
+    }>();
+    const admin = await ownerCookie();
+    expect(await (await get(`/admin/messages/${report?.id ?? ''}`, admin)).text()).toContain(
+      'abusive text',
+    );
+    await post(
+      `/admin/messages/${report?.id ?? ''}/decide`,
+      { action: 'remove', ground: 'illegal', law: '§ 185 StGB', explanation: 'An insult.' },
+      admin,
+    );
+    expect(await (await get(path, owner)).text()).not.toContain('abusive text');
+    expect(await (await get('/account', member)).text()).toContain('Entry in “S”');
+  });
+
+  it('suspends publishing until the date, and keeps threat evidence past retention', async () => {
+    const { author, reportId } = await reportedPrompt();
+    const owner = await ownerCookie();
+    await post(
+      `/admin/messages/${reportId}/decide`,
+      { action: 'suspend', ground: 'terms', explanation: 'Repeated.', suspendDays: '30' },
+      owner,
+    );
+    const path =
+      (await post('/prompts', { title: 'New', body: 'B' }, author)).headers.get('Location') ?? '';
+    const blocked = await post(`${path}/publish`, {}, author);
+    expect(blocked.status).toBe(400);
+    expect(await blocked.text()).toContain('suspended your publishing');
+
+    // Retention: removed content and decisions go after 6 months, threat evidence stays.
+    const threat = crypto.randomUUID();
+    const removed = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO prompts (id, owner_uid, title, body, status, created_at, updated_at) VALUES (?, 'u', 't', 'b', 'removed', 1, 1)",
+      ).bind(threat),
+      env.DB.prepare(
+        "INSERT INTO prompts (id, owner_uid, title, body, status, created_at, updated_at) VALUES (?, 'u', 't', 'b', 'removed', 1, 1)",
+      ).bind(removed),
+      env.DB.prepare(
+        "INSERT INTO moderation_decisions (id, created_at, content_type, content_id, action, explanation) VALUES ('d-threat', 1, 'prompt', ?, 'threat', 'x')",
+      ).bind(threat),
+    ]);
+    await moderationCleanup(env.DB, Math.floor(Date.now() / 1000));
+    expect(await count('prompts', 'id = ?', threat)).toBe(1);
+    expect(await count('prompts', 'id = ?', removed)).toBe(0);
+    expect(await count('moderation_decisions', "id = 'd-threat'")).toBe(1);
+  });
+
+  it('keeps decisions after account deletion without saying who', async () => {
+    const { reportId } = await reportedPrompt();
+    await post(
+      `/admin/messages/${reportId}/decide`,
+      { action: 'restrict', ground: 'terms', explanation: 'R.' },
+      await ownerCookie(),
+    );
+    await deleteUserData(env.DB, 'user-2', 10);
+    expect(await count('moderation_decisions')).toBe(1);
+    expect(await count('moderation_decisions', "affected_uid = 'user-2'")).toBe(0);
   });
 });

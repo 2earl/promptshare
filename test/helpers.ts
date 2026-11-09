@@ -54,6 +54,8 @@ export async function resetDatabase(): Promise<void> {
   await env.DB.batch(
     [
       'invitations',
+      'moderation_decisions',
+      'messages',
       'session_entries',
       'session_members',
       'shared_sessions',

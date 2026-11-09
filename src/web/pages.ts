@@ -1,6 +1,7 @@
 import { SESSION_LIMITS } from '../sessions';
 import { PROMPT_LIMITS, type Prompt, type PromptSummary } from '../prompts';
 import type { Entry, Invitation, Member, SessionSummary } from '../sessions';
+import { ACTIONS, type Decision, type Message, type ReportedContent } from '../moderation';
 import { CATEGORIES, MESSAGE_LIMITS, type Errors } from './messages';
 
 /**
@@ -294,7 +295,8 @@ export function sessionView(
     .map(
       (e) => `<article class="entry${e.mine ? '' : ' entry-other'}" id="entry-${esc(e.id)}">
 <header><span>${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : who(e.author)} · ${esc(date(e.createdAt))}</span>
-${e.mine || session.role === 'owner' ? `<form method="post" action="/sessions/${esc(session.id)}/entries/${esc(e.id)}/delete"><button class="link-button danger" type="submit">Delete</button></form>` : ''}</header>
+<span class="entry-actions">${e.mine ? '' : `<a class="text-link" href="/report?url=${encodeURIComponent(`https://promptshare.cc/sessions/${session.id}/entries/${e.id}`)}">Report</a>`}
+${e.mine || session.role === 'owner' ? `<form method="post" action="/sessions/${esc(session.id)}/entries/${esc(e.id)}/delete"><button class="link-button danger" type="submit">Delete</button></form>` : ''}</span></header>
 <pre>${esc(e.text)}</pre>
 </article>`,
     )
@@ -467,7 +469,7 @@ ${prompt.description ? `<p>${esc(prompt.description)}</p>` : ''}
 
 // ---- Account, contact, report -----------------------------------------------------------------
 
-export function accountPage(handle: string | null): string {
+export function accountPage(handle: string | null, decisions: Decision[] = []): string {
   return layout(
     'Account',
     `<h1>Account</h1>
@@ -476,6 +478,7 @@ export function accountPage(handle: string | null): string {
 <p>${handle ? `Others see you as <strong>@${esc(handle)}</strong>. <a href="/welcome">Change it</a>` : 'You haven’t chosen a handle. You need one to make prompts public or share sessions. <a href="/welcome">Choose a handle</a>'}</p>
 <h2>Your data</h2>
 <p>Download everything Prompt share holds about you, or delete your account, from <a href="https://login.2earl.com/account">your 2earl account</a>. Deleting it deletes your prompts, your sessions and your entries in other people’s sessions.</p>
+${decisionsList(decisions)}
 <form method="post" action="/signout"><button class="button button-quiet" type="submit">Sign out</button></form>`,
     { signedIn: true },
     '/account',
@@ -575,5 +578,190 @@ export function thanks(
     title,
     `<h1>${title}</h1><p>${esc(next)}</p><p><a href="/">Go to the start page</a></p>`,
     viewer,
+  );
+}
+
+// ---- Moderation (owner only) and statements of reasons --------------------------------------
+
+const when = (seconds: number) => date(new Date(seconds * 1000).toISOString());
+
+const categoryLabel = (category: string): string =>
+  category in CATEGORIES ? CATEGORIES[category as keyof typeof CATEGORIES] : category;
+
+const KIND_LABEL = { contact: 'Message', report: 'Report', appeal: 'Contest' } as const;
+
+export function adminList(messages: Message[], open: boolean): string {
+  const rows = messages
+    .map(
+      (
+        m,
+      ) => `<li><a href="/admin/messages/${esc(m.id)}"><span class="item-title">${KIND_LABEL[m.kind]}${m.category ? ` · ${esc(categoryLabel(m.category))}` : ''}</span>
+<span class="item-meta">${esc(when(m.createdAt))} · ${esc(m.body.slice(0, 140))}${m.body.length > 140 ? '…' : ''}</span></a></li>`,
+    )
+    .join('');
+  return layout(
+    'Moderation',
+    `<h1>Moderation</h1>
+<p class="lede">Reports, contests and messages, ${open ? 'oldest first. Reports need a decision without undue delay' : 'most recent first'}.</p>
+<p class="actions">${open ? '<a class="text-link" href="/admin?closed=1">Closed</a>' : '<a class="text-link" href="/admin">Open</a>'}</p>
+${messages.length ? `<ul class="list">${rows}</ul>` : `<p class="empty">${open ? 'Nothing open.' : 'Nothing closed yet.'}</p>`}`,
+    { signedIn: true },
+  );
+}
+
+export interface DecisionForm {
+  action: string;
+  ground: string;
+  law: string;
+  explanation: string;
+  suspendDays: string;
+}
+
+function contentBlock(content: ReportedContent | null): string {
+  if (!content)
+    return '<p class="alert">The link doesn’t point at a prompt or session entry on Prompt share, or the content no longer exists.</p>';
+  if (content.type === 'prompt') {
+    return `<div class="preview"><h2>${esc(content.title)}</h2>
+<p class="muted">Prompt by ${content.ownerHandle ? `@${esc(content.ownerHandle)}` : 'a user without a handle'} · ${esc(content.visibility)} · ${esc(content.status)}</p>
+<pre class="prompt-body">${esc(content.body)}</pre></div>`;
+  }
+  return `<div class="preview"><h2>Entry in “${esc(content.sessionTitle)}”</h2>
+<p class="muted">By ${content.authorHandle ? `@${esc(content.authorHandle)}` : 'a member without a handle'}${content.removed ? ' · removed' : ''}</p>
+<pre class="prompt-body">${esc(content.text)}</pre></div>`;
+}
+
+/** Art. 16(5): the reporter is told the decision. Sent by the owner from their own mailbox. */
+function reporterMailto(message: Message, decision: Decision): string {
+  if (!message.email) return '';
+  const body = [
+    `Hello${message.name ? ` ${message.name}` : ''},`,
+    '',
+    `thank you for your report of ${message.contentUrl ?? 'content on Prompt share'} (reference ${message.id}).`,
+    '',
+    `Our decision: ${ACTIONS[decision.action]}.`,
+    decision.explanation,
+    '',
+    'The decision was made by a person, not by automated means. If you disagree, reply to this email.',
+    'You can also turn to an out-of-court dispute settlement body or a court.',
+    '',
+    'Prompt share (2earl)',
+  ].join('\n');
+  const href = `mailto:${encodeURIComponent(message.email)}?subject=${encodeURIComponent('Your report to Prompt share')}&body=${encodeURIComponent(body)}`;
+  return `<p><a class="button button-quiet" href="${esc(href)}">Email the reporter the decision</a> <span class="muted">Required by the DSA (Art. 16(5)); opens your mail app.</span></p>`;
+}
+
+export function adminMessage(
+  message: Message,
+  content: ReportedContent | null,
+  decision: Decision | null,
+  contested: Decision | null,
+  form: DecisionForm,
+  error: string | null,
+): string {
+  const details = `<dl class="details">
+<dt>Received</dt><dd>${esc(when(message.createdAt))}</dd>
+${message.name ? `<dt>Name</dt><dd>${esc(message.name)}</dd>` : ''}
+${message.email ? `<dt>Email</dt><dd><a href="mailto:${esc(message.email)}">${esc(message.email)}</a></dd>` : ''}
+${message.contentUrl ? `<dt>Content</dt><dd><code>${esc(message.contentUrl)}</code></dd>` : ''}
+${message.category ? `<dt>Reason</dt><dd>${esc(categoryLabel(message.category))}</dd>` : ''}
+${message.kind === 'report' ? `<dt>Good faith</dt><dd>${message.goodFaith ? 'Confirmed' : 'Not confirmed'}</dd>` : ''}
+<dt>Emailed to you</dt><dd>${message.notifiedAt ? 'Yes' : 'No'}</dd>
+</dl>`;
+  const options = (Object.keys(ACTIONS) as (keyof typeof ACTIONS)[])
+    .filter((a) => (message.kind === 'appeal' ? true : a !== 'reverse'))
+    .map(
+      (a) =>
+        `<label class="choice"><input type="radio" name="action" value="${a}"${form.action === a ? ' checked' : ''} required> ${esc(ACTIONS[a])}</label>`,
+    )
+    .join('');
+  const decideForm =
+    message.closedAt === null && message.kind !== 'contact'
+      ? `<form class="form" method="post" action="/admin/messages/${esc(message.id)}/decide">
+<fieldset><legend>Decision</legend>${options}</fieldset>
+<fieldset><legend>Ground</legend>
+<label class="choice"><input type="radio" name="ground" value="illegal"${form.ground === 'illegal' ? ' checked' : ''}> Illegal content</label>
+<label class="choice"><input type="radio" name="ground" value="terms"${form.ground === 'terms' ? ' checked' : ''}> Against the terms of use</label>
+</fieldset>
+<label for="law">Law it breaks <span class="optional">for illegal content, e.g. § 186 StGB</span></label>
+<input id="law" name="law" maxlength="300" value="${esc(form.law)}">
+<label for="suspendDays">Suspension in days <span class="optional">for a suspension</span></label>
+<input id="suspendDays" name="suspendDays" type="number" min="1" max="365" value="${esc(form.suspendDays)}">
+<label for="explanation">Statement of reasons <span class="optional">the author reads this: facts, and why they lead to the decision</span></label>
+<textarea id="explanation" name="explanation" rows="6" required maxlength="5000">${esc(form.explanation)}</textarea>
+<p><button class="button" type="submit">Decide</button></p>
+</form>`
+      : '';
+  const closeForm =
+    message.closedAt === null
+      ? `<form method="post" action="/admin/messages/${esc(message.id)}/close"><button class="button button-quiet" type="submit">${message.kind === 'contact' ? 'Mark answered' : 'Close without a decision'}</button></form>`
+      : `<p class="muted">Closed ${esc(when(message.closedAt))}.</p>`;
+  return layout(
+    `${KIND_LABEL[message.kind]} ${message.id}`,
+    `<p class="crumb"><a href="/admin">Moderation</a></p>
+<h1>${KIND_LABEL[message.kind]}</h1>
+${error ? `<p class="alert" role="alert">${esc(error)}</p>` : ''}
+${details}
+<h2>${message.kind === 'appeal' ? 'Their objection' : 'Message'}</h2>
+<pre class="prompt-body">${esc(message.body)}</pre>
+${contested ? `<h2>The decision contested</h2><p><strong>${esc(ACTIONS[contested.action])}</strong> · ${esc(when(contested.createdAt))}</p><pre class="prompt-body">${esc(contested.explanation)}</pre>` : ''}
+${message.kind !== 'contact' ? `<h2>The content</h2>${contentBlock(content)}` : ''}
+${form.action === 'threat' || decision?.action === 'threat' ? THREAT_PROCEDURE : ''}
+${decision ? `<h2>Decision</h2><p><strong>${esc(ACTIONS[decision.action])}</strong> · ${esc(when(decision.createdAt))}</p><pre class="prompt-body">${esc(decision.explanation)}</pre>${message.kind === 'report' ? reporterMailto(message, decision) : ''}` : ''}
+${decideForm}
+<div class="danger-zone">${closeForm}</div>`,
+    { signedIn: true },
+  );
+}
+
+const THREAT_PROCEDURE = `<div class="alert"><p><strong>Threat to life or safety (DSA Art. 18).</strong> Inform the police at once: the online reporting portal of the police of the German state concerned, or 110 if it is urgent. If it isn’t clear which country is concerned: the German authorities, or Europol. The content is kept as evidence until they have it.</p></div>`;
+
+export function decisionsList(decisions: Decision[]): string {
+  if (!decisions.length) return '';
+  const rows = decisions
+    .map(
+      (
+        d,
+      ) => `<li><a href="/decisions/${esc(d.id)}"><span class="item-title">${esc(d.contentTitle ?? 'Your account')}</span>
+<span class="item-meta">${esc(ACTIONS[d.action])} · ${esc(when(d.createdAt))}</span></a></li>`,
+    )
+    .join('');
+  return `<h2>Moderation decisions about your content</h2><ul class="list">${rows}</ul>`;
+}
+
+export function decisionPage(decision: Decision, contested: boolean): string {
+  const ground =
+    decision.ground === 'illegal'
+      ? `Illegal content${decision.law ? `: ${esc(decision.law)}` : ''}`
+      : decision.ground === 'terms'
+        ? 'The <a href="https://2earl.com/terms">terms of use</a>'
+        : '—';
+  return layout(
+    'Moderation decision',
+    `<p class="crumb"><a href="/account">Account</a></p>
+<h1>Moderation decision</h1>
+<dl class="details">
+<dt>About</dt><dd>${esc(decision.contentTitle ?? 'Your account')}</dd>
+<dt>Decision</dt><dd>${esc(ACTIONS[decision.action])}</dd>
+${decision.untilAt ? `<dt>Until</dt><dd>${esc(when(decision.untilAt))}</dd>` : ''}
+<dt>Date</dt><dd>${esc(when(decision.createdAt))}</dd>
+<dt>Ground</dt><dd>${ground}</dd>
+<dt>Started by</dt><dd>${decision.reportBased ? 'A report from someone else' : 'Our own review'}</dd>
+<dt>Automated?</dt><dd>No. A person reviewed the content and decided.</dd>
+</dl>
+<h2>Reasons</h2>
+<pre class="prompt-body">${esc(decision.explanation)}</pre>
+<h2>If you disagree</h2>
+${
+  contested
+    ? '<p>You contested this decision. A person will review it and you’ll see the outcome here.</p>'
+    : `<p>Tell us why, and a person will review the decision again. You can also turn to an out-of-court dispute settlement body or a court.</p>
+<form class="form" method="post" action="/decisions/${esc(decision.id)}/contest">
+<label for="body">Why the decision is wrong</label>
+<textarea id="body" name="body" rows="6" required maxlength="10000"></textarea>
+<p><button class="button" type="submit">Contest the decision</button></p>
+</form>`
+}`,
+    { signedIn: true },
+    '/account',
   );
 }

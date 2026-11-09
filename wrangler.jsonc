@@ -30,6 +30,8 @@
       "STATE_ENCRYPTION_KEY",
       // HMAC key for website session and sign-in cookies (only their HMAC is stored).
       "SESSION_PEPPER",
+      // The owner's 2earl user ID: the only account that can open the moderation view.
+      "OWNER_UID",
     ],
   },
 

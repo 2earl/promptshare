@@ -78,8 +78,9 @@ export async function storeMessage(
   db: D1Database,
   now: number,
   message: {
-    kind: 'contact' | 'report';
+    kind: 'contact' | 'report' | 'appeal';
     uid: string | null;
+    decisionId?: string;
     name: string;
     email: string;
     body: string;
@@ -91,8 +92,8 @@ export async function storeMessage(
   const id = crypto.randomUUID();
   await db
     .prepare(
-      `INSERT INTO messages (id, kind, uid, name, email, content_url, category, body, good_faith, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, kind, uid, name, email, content_url, category, body, good_faith, created_at, decision_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -105,6 +106,7 @@ export async function storeMessage(
       message.body,
       message.goodFaith ? 1 : 0,
       now,
+      message.decisionId ?? null,
     )
     .run();
   return id;
@@ -151,7 +153,7 @@ export async function notifyOwner(
   now: number,
   id: string,
   message: {
-    kind: 'contact' | 'report';
+    kind: 'contact' | 'report' | 'appeal';
     name: string;
     email: string;
     body: string;
@@ -172,7 +174,7 @@ export async function notifyOwner(
           message.body,
         ]
       : [
-          `Message ${id}`,
+          `${message.kind === 'appeal' ? 'Contest' : 'Message'} ${id}`,
           `From: ${message.name || '(no name)'} <${message.email}>`,
           '',
           message.body,
@@ -187,7 +189,11 @@ export async function notifyOwner(
           to: env.CONTACT_TO,
           replyTo: message.email || null,
           subject:
-            message.kind === 'report' ? 'Prompt share: new report' : 'Prompt share: new message',
+            message.kind === 'report'
+              ? 'Prompt share: new report'
+              : message.kind === 'appeal'
+                ? 'Prompt share: a decision was contested'
+                : 'Prompt share: new message',
           text: lines.join('\n'),
           messageId: id,
           date: new Date(now * 1000),

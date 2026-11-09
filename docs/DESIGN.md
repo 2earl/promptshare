@@ -1,6 +1,6 @@
 # Prompt share: design
 
-Status: **P1 and C1 deployed**; **C2a built** (handles, publishing, invitations).
+Status: **P1, C1 and C2a deployed**; **C2b built** (moderation).
 
 Related:
 - [2earl/login](https://github.com/2earl/login), the authorization server;
@@ -280,7 +280,8 @@ login's "Download your data" includes it.
 | P1 | Worker with `GatewayMcp` (§6 tools: private prompts, own sessions) and `AccountEvents`; D1; CI, deploy, Terraform; the gateway's entry and binding; login's scopes and registry entry. **An assistant can save and reuse prompts and continue across sessions** | Done, deployed |
 | P2 / C1 | Website on promptshare.cc: sign-in with login (CIMD client, PKCE), managing your own prompts and sessions, how-to-connect page, contact form (the imprint's second channel), report form (DSA Art. 16), owner notified by email | Built |
 | P2 / C2a | Handle; publishing after a preview; public prompts to explore, read, copy and report; invitation links (single use, 7 days, HMAC only), members, leaving; assistants see authors' handles | Built |
-| P2 / C2b | Moderation view (owner, second factor required through login), restrict/remove/suspend, statements of reasons, contest, Art. 18, retention; terms and privacy policy on 2earl.com cover Prompt share. **Launch gate: LEGAL.md's owner items done** | |
+| P2 / C2b | Moderation view at `/admin`: the owner's account (`OWNER_UID`) with a second factor verified through login in the last 15 minutes (`acr_values=urn:2earl:aal2`). Restrict, remove, suspend publishing, threat to life or safety, reverse; statements of reasons at `/decisions/:id`; contest once per decision; report links on entries; ~6-month retention, threat evidence kept | Built |
+| P2 / D | Terms and privacy policy on 2earl.com cover Prompt share; the imprint links the contact form. **Launch gate: LEGAL.md's owner items done** | |
 | P3 | MCP prompts primitive through the gateway; prompt versions | |
 
 Public prompts can't exist before C2, because publishing is a website action. So nothing public
