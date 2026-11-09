@@ -45,6 +45,8 @@ There are two ways in:
 | D7 | Publishing a prompt and inviting people happen only on the website, never through an assistant (§6) | Proposed |
 | D8 | Session contents are encrypted in the application, with a key only the Worker holds (§7.1) | Proposed |
 | D9 | Assistants first (phase P1), website second (P2) | Proposed |
+| D10 | A private prompt can be shared with chosen people by email; sharing only on the website; the answer never reveals whether an address has an account (§4.1) | Owner asked, 2026-11-09; details proposed |
+| D11 | login tells Prompt share, and only Prompt share, which account has a verified address, and a signed-in user's own address (§4.1) | Proposed |
 
 ## 3. Architecture
 
@@ -99,6 +101,53 @@ browser ───▶ promptshare.cc ── sign in with 2earl (OAuth, PKCE) ─�
 - **Publishing:** only on the website, after a preview that shows exactly what becomes visible
   (D7). Unpublishing is immediate and also available to assistants.
 
+### 4.1 Sharing a prompt with people (phase S1)
+
+A private prompt can be shared with up to 50 people by their email address. They can read it
+and copy it; only the author changes it, and they see changes at once.
+
+**Who sees what:**
+- **The author** sees the addresses they typed and removes any of them at once.
+- **A recipient** sees the prompt under "Shared with you" on promptshare.cc and through their
+  assistant, with the author's handle. They can remove it from their list.
+- **Nobody** learns whether an address has a 2earl account. Sharing answers the same for every
+  address ("They'll see it when they sign in to promptshare.cc with this address"), and the author
+  sees the same list either way.
+
+**Matching an address to an account.** Prompt share doesn't know anyone's email (§4); login
+does. login gets a named entrypoint, `PromptshareDirectory`, bound only to Prompt share:
+- `uidForEmail(email)` returns the account with that **verified** address, or none. It is used
+  when sharing.
+- `verifiedEmail(uid)` returns the signed-in user's address. It is used after each website
+  sign-in to pick up shares made before they had an account.
+
+A share to an address without an account waits: `prompt_shares` keeps the normalised address with
+no `uid`. While sign-up is locked, that is everyone the owner hasn't invited.
+
+**Assistants:**
+- `search_prompts` and `get_prompt` also return prompts shared with you, labelled "shared by
+  @handle" inside the same untrusted-content boundary as public prompts.
+- `copy_prompt` works on them.
+- **Sharing and unsharing happen only on the website (D7).** Text an assistant reads could
+  otherwise tell it to share your private prompts with an attacker's address.
+
+**Email:** none for now. On the free plan Cloudflare sends only to verified destination addresses.
+That includes promptshare@2earl.com as a sender: emailing users needs Workers Paid and the sending
+domain onboarded in Email Sending, the same as reporter emails. Later, a second switch on `/admin`
+("Email people when a prompt is shared with them") can add it, at most 20 shares a day per author.
+
+**Limits:**
+- 50 recipients per prompt;
+- 200 new shares per author per day;
+- public prompts aren't shared, since every user sees them already.
+
+**Legally**, a prompt shared with chosen people is hosting, like a session, not dissemination to
+the public (LEGAL.md §1). Recipients can report it like a session entry.
+
+**Account deletion:**
+- an author's shares go with their prompts;
+- a recipient's matches go back to waiting.
+
 ## 5. Shared sessions
 
 A shared session has a title, an owner and members. Its content is a list of **entries** that
@@ -131,6 +180,28 @@ Limits [proposed]:
 - There is no user directory, so nobody can find other users by searching.
 
 Before the website exists, sessions work between one person's own assistants and sessions only.
+
+### 5.1 What session users need next (phases S2, S3)
+
+The tools today: create, list, load, add, delete an entry, delete the session. Thinking through
+real use:
+
+| Use | What's missing | Proposal | Phase |
+|---|---|---|---|
+| "Continue in ChatGPT what I did in Claude" | The next assistant reads the whole log, newest first, and has to work out the current state | A **brief** per session: one editable text (goal, decisions, open questions, next steps) that `load_session` returns first. `update_session_brief` replaces it; earlier versions and who wrote them are kept | S2 |
+| Coming back to a team session | No way to see only what's new | `load_session` takes `since` (an entry ID). `list_sessions` shows the number of entries newer than your last load | S2 |
+| Telling a decision from a note | Every entry is free text with an optional label | Entry `kind`: `note`, `decision`, `question`, `task`, `summary`, `artifact` (code or a document). `load_session` filters by kind | S2 |
+| Answering a member's question | Entries don't refer to each other | `reply_to` on an entry; `load_session` shows threads | S2 |
+| Renaming, or starting from a prompt | Title is fixed; sessions start empty | `update_session` (title, owner only); `create_session` with `fromPromptId` puts the prompt in the brief | S2 |
+| "What did we decide about X?" | No search inside a session | `search_session`: decrypts and searches one session (at most 5 MB). Search across all sessions isn't offered, because entries are encrypted (§7.1) | S3 |
+| Tasks between members | A task is text | `task` entries with status and an assignee handle; `update_task` | S3 |
+| Keeping a copy | No export of one session | Markdown download on the website | S3 |
+
+Kept as they are:
+- **Entries are never edited** (it stays clear who wrote what). The brief is the part that is
+  meant to change, and it has a history.
+- **Inviting, roles and leaving stay on the website (D7).** An assistant that reads others'
+  entries must not be able to add members.
 
 ## 6. MCP tools (through the gateway)
 
@@ -283,6 +354,9 @@ login's "Download your data" includes it.
 | P2 / C2b | Moderation view at `/admin`: the owner's account (`OWNER_UID`) with a second factor verified through login in the last 15 minutes (`acr_values=urn:2earl:aal2`). Restrict, remove, suspend publishing, threat to life or safety, reverse; statements of reasons at `/decisions/:id`; contest once per decision; report links on entries; ~6-month retention, threat evidence kept | Built |
 | P2 / D | Terms and privacy policy on 2earl.com cover Prompt share; the imprint links the contact form | Open: 2earl/website#6 |
 | P2 / C2c | Explicit consent for sensitive data (asked once, withdrawable); owner reminded of messages open 30 minutes; reporters emailed receipt and decision when the owner turns it on (Workers Paid) | Built |
+| S1 | Sharing a private prompt with people by email (§4.1): login's `PromptshareDirectory`, `prompt_shares`, "Shared with you" on the website and through assistants; privacy policy | Proposed |
+| S2 | Sessions: brief with history, `since` and new-entry counts, entry kinds, replies, `update_session`, starting from a prompt (§5.1) | Proposed |
+| S3 | Sessions: search within a session, tasks, Markdown export (§5.1) | Proposed |
 | P3 | MCP prompts primitive through the gateway; prompt versions | |
 
 Public prompts can't exist before C2, because publishing is a website action. So nothing public
