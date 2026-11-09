@@ -1,0 +1,57 @@
+# Prompt share: threat model
+
+Status: proposal (phase P0), with [DESIGN.md](DESIGN.md). Sign-in, consent and tokens are
+login's ([threat model](https://github.com/2earl/login/blob/main/docs/THREAT_MODEL.md)). The
+assistant path is the gateway's
+([threat model](https://github.com/2earl/mcp/blob/main/docs/THREAT_MODEL.md)).
+
+## Assets
+
+1. **Session content:** whole conversations users chose to save, possibly with health data,
+   other people's data or credentials. The most sensitive data in 2earl.
+2. **Private prompts.**
+3. **Integrity of public prompts and session entries**, which other users' assistants read.
+4. **Users' choices about visibility:** what is private stays private.
+5. **Moderation records:** reports and reporters' contact details.
+
+## Trust boundaries
+
+- Gateway → `GatewayMcp`: same Cloudflare account. The `X-2earl-*` headers are trusted.
+- Browser → website: an untrusted browser with a promptshare.cc session.
+- Anyone → report form: untrusted, unauthenticated.
+- **Content → assistants:** public prompts and other members' entries are untrusted input for
+  every assistant that reads them.
+
+## Threats and controls
+
+| Threat | Control | Verified by (planned) |
+|---|---|---|
+| **Cross-user prompt injection:** a member writes an entry, or an author a public prompt, telling the reader's assistant to save secrets into the session or delete the reader's prompts | Others' content is returned delimited, attributed and labelled as not the user's instructions. Publishing, inviting and member changes are website-only, so injected text can't make anything public. `state` is a separate permission from `read`. A save into a session with other members is refused when the text looks like credentials | Tests: labelling, secret detection, no publish tool. Residual risk below |
+| Reading or changing another user's prompts or sessions (IDOR) | Every query is keyed by the caller's `uid` and membership; IDs are random (128 bits); "not found" for both missing and forbidden | Tests per tool and page |
+| Forged `X-2earl-*` headers on public routes | Only `GatewayMcp` reads them; the website's `fetch` never does | Test: headers on `fetch` are ignored |
+| Database read through a leaked Cloudflare API token | Session entries encrypted with a key held only as a Worker secret (DESIGN §7.1) | Test: rows hold no plaintext |
+| Accidental publication | Private by default; publishing only on the website after a preview; unpublish at once | Browser test |
+| Joining a session without an invitation | Single-use, hashed, 7-day links; joining needs a signed-in person pressing **Join** (CSRF-protected); the owner sees and removes members | Tests |
+| An invitation link leaks | Single use; the owner sees who joined and can remove them and revoke unused links | Tests |
+| User enumeration | No directory or search of users; handles appear only on public prompts | Review |
+| Abuse of the report form (spam, fake reports) | Rate limits per network; no account needed by law, so reports are queued, never acted on automatically | Tests |
+| Unlawful public content | Notice and action, statements of reasons, Art. 18 procedure (LEGAL.md) | Browser test of the report → decision path |
+| Size and cost abuse | Limits per prompt, entry, session and user (DESIGN §5); gateway rate limit | Tests |
+| Data left after account deletion | `AccountEvents.deleteUser`, retried by login | Tests |
+| XSS through prompt or entry text on the website | Output escaped; CSP without inline scripts; text never rendered as HTML | Header and rendering tests |
+| Supply chain | Exact versions, release delay, Dependabot, CodeQL, lockfile | CI |
+
+## Residual risks
+
+- **Prompt injection between users stays possible.** A member of your session, or the author of a
+  public prompt you load, can write text that steers your assistant within the permissions you
+  gave it. The controls above keep it from publishing or inviting, and make it visible who wrote
+  what. They can't stop an assistant that follows the text from, for example, adding an entry to
+  that same session. Mitigations for the user:
+  - invite only people you trust;
+  - don't let an assistant write to sessions automatically after reading others' entries.
+
+  The website and the tool descriptions say so.
+- **Moderators read reported content,** including private session entries a member reported.
+- **Members can copy what they read.** Removing someone from a session doesn't remove what they
+  saw.
