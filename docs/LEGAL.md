@@ -85,11 +85,45 @@ Drafts are written in phase P2 and reviewed before launch.
 |---|---|---|
 | 1 | Contact address for DSA Art. 11 and 12 | **Done:** `legal@2earl.com` (Cloudflare Email Routing to the owner's mailbox). It goes on promptshare.cc's contact page in phase P2 |
 | 2 | Imprint | **Exists** at `2earl.com/imprint`. Its scope covers "every other 2earl service that links to it", so promptshare.cc links to it from every page |
-| 3 | Imprint gap: a second fast contact channel besides email | **Decided** by the owner: a contact form, not a phone number. Built in phase C1 at `promptshare.cc/contact`, emailed to the owner; to be linked from the 2earl imprint. An electronic form answered quickly is generally accepted as the alternative to a phone number, but this is not settled beyond doubt |
-| 4 | Review of this list and the §5 texts | **Decided** by the owner, 2026-11-09: no lawyer is available; Claude reviews them before phase P2 launches. That review checks the texts against the sources and this list; it is not legal advice, and the owner carries the legal risk |
+| 3 | Imprint gap: a second fast contact channel besides email | **Decided** by the owner: a contact form, not a phone number. Built in phase C1 at `promptshare.cc/contact`, emailed to the owner; linked from the 2earl imprint (2earl/website#6). An electronic form answered quickly is generally accepted as the alternative to a phone number, but this is not settled beyond doubt |
+| 4 | Review of this list and the §5 texts | **Done** by Claude, 2026-11-09 (§8), by the owner's decision that no lawyer is available. Not legal advice; the owner carries the legal risk |
 | 5 | Cloudflare data processing agreement | **Open:** confirm it applies to the account (it is part of Cloudflare's self-serve terms) |
 | 6 | Records of processing (GDPR Art. 30) | **Open:** a short document for login, the gateway and Prompt share, written with phase P2 |
-| 7 | Terms and privacy policy on 2earl.com cover Prompt share | **Open:** a 2earl/website PR in phase P2 |
+| 7 | Terms and privacy policy on 2earl.com cover Prompt share; imprint links the contact form | **Done:** 2earl/website#6 |
+
+## 8. Review, 2026-11-09
+
+Claude checked 2earl/website#6 (privacy policy, terms, imprint) and Prompt share's code against
+§2–§5. Not legal advice.
+
+| Requirement | Met by | Check |
+|---|---|---|
+| DSA Art. 11, 12: points of contact, languages | Imprint: `legal@2earl.com`, English and German | ✓ |
+| DSA Art. 14: content rules, moderation, measures, complaints, automation, plain language | Terms §7–§8 | ✓ |
+| DSA Art. 16: notice mechanism with the 16(2) elements, confirmation, decision to the notifier | `/report`; confirmation page; decision email prepared for the owner | ✓. The notifier is told the decision by the owner's own email, which depends on the owner sending it |
+| DSA Art. 17: statement of reasons with every 17(3) element | `/decisions/:id` | ✓ |
+| DSA Art. 18: threats to life or safety | "Threat" decision; procedure shown; evidence kept | ✓ |
+| § 5 DDG: name, address, email, second fast channel | Imprint; contact form | ✓, with the risk below |
+| GDPR Art. 13: controller, purposes, legal bases, recipients, transfers, retention, rights, authority | Privacy policy §1–§10 | ✓ |
+| § 25 TDDDG: only strictly necessary cookies | promptshare.cc sets session and sign-in cookies only | ✓ |
+
+**Remaining risks**, for the owner to accept or change:
+
+1. **Special categories of data (GDPR Art. 9).** Users may save health or similar data in their
+   own prompts and sessions. The policy asks them not to share such data, but it names no Art. 9
+   legal basis for storing it at their request. Practice varies; a lawyer would likely add an
+   explicit-consent step or a narrower statement.
+2. **Contact form instead of a phone number** (§ 5 DDG). Accepted by the courts as an alternative
+   when answered quickly; not settled beyond doubt. It works only if messages are answered
+   within a short time (a reasonable target is 60 minutes on working days).
+3. **Notifying reporters** (Art. 16(5)) depends on the owner sending the prepared email. On the
+   Workers Paid plan the site could send it itself.
+4. **Micro-enterprise exemptions** (Art. 15, 19) hold only while 2earl stays a micro or small
+   enterprise; the yearly transparency report and the online-platform duties apply otherwise.
+5. **Age.** Users must be 16 (terms §3); there is no age check. That is common, and the GDPR's
+   consent age doesn't apply because processing rests on the contract.
+6. **Terms changes.** The terms promise email notice 30 days before material changes. Today only
+   invited accounts exist; once sign-up opens, changes need that notice.
 
 ## 7. Sources
 
