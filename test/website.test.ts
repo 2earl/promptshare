@@ -6,7 +6,7 @@ import { safeReturnTo } from '../src/web/http';
 import { getMessage, moderationCleanup } from '../src/moderation';
 import { remindOwner, sendDecision, sendReceipt } from '../src/notices';
 import { mimeMessage, notifyOwner } from '../src/web/messages';
-import { TOOL_DOCS } from '../src/web/pages';
+import { TOOL_DOCS, timeTag } from '../src/web/pages';
 import { shareCleanup, sharePrompt } from '../src/shares';
 import { addMember, connect, count, parsed, publicPrompt, resetDatabase, tool } from './helpers';
 
@@ -1419,5 +1419,38 @@ describe('earlier versions on the website', () => {
     const other = await signIn('user-2');
     expect((await get(`${path}/versions`, other.cookie)).status).toBe(404);
     expect((await post(restore, {}, other.cookie)).status).toBe(404);
+  });
+});
+
+describe('UX review: times, the session page', () => {
+  it('says times as people do, with the exact UTC time kept', () => {
+    const now = Date.parse('2026-11-09T21:00:00Z');
+    expect(timeTag('2026-11-09T20:59:30Z', now)).toContain('>just now<');
+    expect(timeTag('2026-11-09T20:55:00Z', now)).toContain('>5 minutes ago<');
+    expect(timeTag('2026-11-09T18:00:00Z', now)).toContain('>3 hours ago<');
+    expect(timeTag('2026-11-08T23:00:00Z', now)).toContain('>yesterday<');
+    expect(timeTag('2026-11-03T10:00:00Z', now)).toContain('>3 Nov<');
+    expect(timeTag('2025-12-24T10:00:00Z', now)).toContain('>24 Dec 2025<');
+    expect(timeTag('2026-11-16T10:00:00Z', now)).toContain('>16 Nov 2026<');
+    expect(timeTag('2026-11-09T20:55:00Z', now)).toContain(
+      'datetime="2026-11-09T20:55:00Z" title="2026-11-09 20:55 UTC"',
+    );
+  });
+
+  it('shows open tasks above the entries and filters entries by kind', async () => {
+    const { cookie } = await signIn('user-1');
+    const client = await connect('user-1');
+    const id = parsed<{ id: string }>(
+      (await tool(client, 'create_session', { title: 'Plan' })).texts,
+    ).id;
+    await tool(client, 'save_to_session', { id, kind: 'task', label: 'Book hotel', text: 'x' });
+    await tool(client, 'save_to_session', { id, kind: 'decision', text: 'Lisbon it is' });
+    const page = await (await get(`/sessions/${id}`, cookie)).text();
+    expect(page.indexOf('Open tasks')).toBeLessThan(page.indexOf('id="entries-title"'));
+    expect(page).toContain('Book hotel</a>');
+    const decisions = await (await get(`/sessions/${id}?kind=decision`, cookie)).text();
+    expect(decisions).toContain('Lisbon it is');
+    expect(decisions).not.toContain('<strong>Book hotel</strong>');
+    expect(decisions).toContain('?kind=decision#entries-title" aria-current="true"');
   });
 });
