@@ -71,8 +71,9 @@
     },
   ],
 
-  // Daily at 03:53 UTC: old security-log entries.
+  // Every 10 minutes: remind the owner of messages unanswered for 30 minutes.
+  // Daily at 03:53 UTC: retention (security log, moderation records).
   "triggers": {
-    "crons": ["53 3 * * *"],
+    "crons": ["*/10 * * * *", "53 3 * * *"],
   },
 }

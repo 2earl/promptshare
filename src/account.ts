@@ -22,6 +22,7 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
     db.prepare('DELETE FROM prompts WHERE owner_uid = ?').bind(uid),
     db.prepare('DELETE FROM web_sessions WHERE uid = ?').bind(uid),
     db.prepare('DELETE FROM profiles WHERE uid = ?').bind(uid),
+    db.prepare('DELETE FROM consents WHERE uid = ?').bind(uid),
     // Statements of reasons stay for their retention period (LEGAL.md §4), no longer saying who.
     db
       .prepare('UPDATE moderation_decisions SET affected_uid = NULL WHERE affected_uid = ?')
@@ -43,6 +44,7 @@ export async function deleteUserData(db: D1Database, uid: string, now: number): 
             + (SELECT COUNT(*) FROM audit_events WHERE actor_user_id = ?1)
             + (SELECT COUNT(*) FROM web_sessions WHERE uid = ?1)
             + (SELECT COUNT(*) FROM profiles WHERE uid = ?1)
+            + (SELECT COUNT(*) FROM consents WHERE uid = ?1)
             + (SELECT COUNT(*) FROM moderation_decisions WHERE affected_uid = ?1)
             + (SELECT COUNT(*) FROM invitations WHERE created_by = ?1 OR used_by = ?1)
             + (SELECT COUNT(*) FROM messages WHERE uid = ?1) AS n`,
@@ -159,6 +161,12 @@ export async function exportUserData(
       text: row.body,
       sentAt: iso(row.created_at as number),
     })),
+    consents: (
+      await db
+        .prepare('SELECT kind, consented, version, decided_at FROM consents WHERE uid = ?')
+        .bind(uid)
+        .all()
+    ).results,
     moderationDecisions: (
       await db
         .prepare(

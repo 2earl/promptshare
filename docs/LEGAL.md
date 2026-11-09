@@ -89,7 +89,7 @@ Drafts are written in phase P2 and reviewed before launch.
 | 4 | Review of this list and the §5 texts | **Done** by Claude, 2026-11-09 (§8), by the owner's decision that no lawyer is available. Not legal advice; the owner carries the legal risk |
 | 5 | Cloudflare data processing agreement | **Open:** confirm it applies to the account (it is part of Cloudflare's self-serve terms) |
 | 6 | Records of processing (GDPR Art. 30) | **Open:** a short document for login, the gateway and Prompt share, written with phase P2 |
-| 7 | Terms and privacy policy on 2earl.com cover Prompt share; imprint links the contact form | **Done:** 2earl/website#6 |
+| 7 | Terms and privacy policy on 2earl.com cover Prompt share; imprint links the contact form | **Open:** 2earl/website#6, waiting for merge. Until it is merged, 2earl.com doesn't describe Prompt share |
 
 ## 8. Review, 2026-11-09
 
@@ -109,15 +109,19 @@ Claude checked 2earl/website#6 (privacy policy, terms, imprint) and Prompt share
 
 **Remaining risks**, for the owner to accept or change:
 
-1. **Special categories of data (GDPR Art. 9).** Users may save health or similar data in their
-   own prompts and sessions. The policy asks them not to share such data, but it names no Art. 9
-   legal basis for storing it at their request. Practice varies; a lawyer would likely add an
-   explicit-consent step or a narrower statement.
+1. **Special categories of data (GDPR Art. 9).** *Addressed:* explicit consent (Art. 9(2)(a)) is
+   asked once after the first website sign-in, recorded with its wording's version, optional, and
+   withdrawable on the account page; assistants note the question until it is answered.
+   *Remaining:* a user who declines may still save such data; Prompt share can't detect it.
+   Someone who uses only an assistant and never the website is reminded, not asked.
 2. **Contact form instead of a phone number** (§ 5 DDG). Accepted by the courts as an alternative
-   when answered quickly; not settled beyond doubt. It works only if messages are answered
-   within a short time (a reasonable target is 60 minutes on working days).
-3. **Notifying reporters** (Art. 16(5)) depends on the owner sending the prepared email. On the
-   Workers Paid plan the site could send it itself.
+   when answered quickly; not settled beyond doubt. *Addressed:* the owner is emailed at once,
+   and reminded if a message is still open after 30 minutes. Answering stays the owner's task.
+3. **Notifying reporters** (Art. 16(4), 16(5)). *Addressed:* a switch on the moderation page
+   sends the confirmation of receipt and the decision automatically from noreply@promptshare.cc
+   (needs Workers Paid and promptshare.cc onboarded to Email Sending). Off, the owner sends the
+   prepared email. Receipts are capped at 3 per address a day, so the form can't be used to mail
+   strangers.
 4. **Micro-enterprise exemptions** (Art. 15, 19) hold only while 2earl stays a micro or small
    enterprise; the yearly transparency report and the online-platform duties apply otherwise.
 5. **Age.** Users must be 16 (terms §3); there is no age check. That is common, and the GDPR's

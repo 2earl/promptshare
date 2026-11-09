@@ -4,6 +4,7 @@ import { deleteUserData, exportUserData } from './account';
 import { AUDIT_RETENTION_SECONDS } from './audit';
 import { callerFrom } from './caller';
 import { moderationCleanup } from './moderation';
+import { remindOwner } from './notices';
 import { buildServer } from './tools';
 import { createApp } from './web/app';
 
@@ -15,6 +16,9 @@ import { createApp } from './web/app';
  */
 
 const now = () => Math.floor(Date.now() / 1000);
+
+/** wrangler.jsonc: every 10 minutes, the reminder; otherwise the daily clean-up. */
+export const REMINDER_CRON = '*/10 * * * *';
 
 /** MCP over a Service Binding from the gateway (2earl/mcp docs/UPSTREAM_CONTRACT.md). */
 export class GatewayMcp extends WorkerEntrypoint<Env> {
@@ -44,7 +48,11 @@ export default {
     return website.fetch(request, env, ctx);
   },
 
-  async scheduled(_controller, env): Promise<void> {
+  async scheduled(controller, env): Promise<void> {
+    if (controller.cron === REMINDER_CRON) {
+      await remindOwner(env, now());
+      return;
+    }
     await moderationCleanup(env.DB, now());
     await env.DB.prepare('DELETE FROM audit_events WHERE at < ?')
       .bind(now() - AUDIT_RETENTION_SECONDS)
