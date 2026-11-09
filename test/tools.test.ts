@@ -67,6 +67,14 @@ describe('entry points', () => {
     for (const name of ['list_sessions', 'load_session', 'save_to_session', 'delete_session']) {
       expect(byName.get(name)?._meta).toEqual({ '2earl/scope': SCOPES.state });
     }
+    // Directory rules: every tool has a title, and every tool that changes data is marked
+    // destructive, so Claude asks before each one.
+    for (const t of tools) {
+      expect(t.title).toBeTruthy();
+      expect(t.annotations?.readOnlyHint === true || t.annotations?.destructiveHint === true).toBe(
+        true,
+      );
+    }
     // No tool publishes or invites (DESIGN D7).
     expect(
       tools.some((t) => /publish_prompt$|invite/.test(t.name) && t.name !== 'unpublish_prompt'),
