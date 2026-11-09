@@ -58,18 +58,27 @@ describe('entry points', () => {
       'get_prompt',
       'list_sessions',
       'load_session',
+      'rename_session',
       'save_prompt',
       'save_to_session',
       'search_prompts',
       'unpublish_prompt',
       'update_prompt',
+      'update_session_brief',
     ]);
     // Read-only tools need `read` at the gateway; session tools name `state` themselves.
     for (const name of ['search_prompts', 'get_prompt']) {
       expect(byName.get(name)?.annotations?.readOnlyHint).toBe(true);
       expect(byName.get(name)?._meta).toBeUndefined();
     }
-    for (const name of ['list_sessions', 'load_session', 'save_to_session', 'delete_session']) {
+    for (const name of [
+      'list_sessions',
+      'load_session',
+      'save_to_session',
+      'update_session_brief',
+      'rename_session',
+      'delete_session',
+    ]) {
       expect(byName.get(name)?._meta).toEqual({ '2earl/scope': SCOPES.state });
     }
     // Directory rules: every tool has a title, and every tool that changes data is marked
@@ -334,7 +343,7 @@ describe('shared sessions', () => {
     for (const n of [1, 2, 3])
       await tool(client, 'save_to_session', { id, text: `entry ${String(n)}` });
     const ids = (
-      await env.DB.prepare('SELECT id FROM session_entries ORDER BY created_at, id').all<{
+      await env.DB.prepare('SELECT id FROM session_entries ORDER BY rowid').all<{
         id: string;
       }>()
     ).results.map((r) => r.id);
@@ -407,5 +416,146 @@ describe('authors (phase C2)', () => {
     await tool(await connect('user-2'), 'save_to_session', { id: session.id, text: 'hello' });
     const loaded = (await tool(client, 'load_session', { id: session.id })).texts.join('\n');
     expect(loaded).toContain('written by @grace');
+  });
+});
+
+describe('sessions: brief, kinds, replies, new entries (phase S2)', () => {
+  async function session(owner = 'user-1') {
+    const client = await connect(owner);
+    const created = parsed<{ id: string }>(
+      (await tool(client, 'create_session', { title: 'Launch' })).texts,
+    );
+    return { client, id: created.id };
+  }
+  const saved = (texts: string[]) => parsed<{ saved: string }>(texts).saved;
+
+  it('keeps a brief that load_session returns first, with its versions', async () => {
+    const { client, id } = await session();
+    await tool(client, 'save_to_session', { id, text: 'an entry' });
+    expect((await tool(client, 'update_session_brief', { id, text: 'Goal: v1' })).error).toBe(
+      false,
+    );
+    await tool(client, 'update_session_brief', { id, text: 'Goal: v2' });
+    const loaded = await tool(client, 'load_session', { id });
+    expect(parsed<{ briefVersions: number; entries: number }>(loaded.texts)).toMatchObject({
+      briefVersions: 2,
+      entries: 1,
+    });
+    expect(loaded.texts[1]).toMatch(/^\[BRIEF · /);
+    expect(loaded.texts[1]).toContain('Goal: v2');
+    expect(loaded.texts[2]).toContain('an entry');
+  });
+
+  it('keeps the last 20 versions, and refuses a brief over 16 KB', async () => {
+    const { client, id } = await session();
+    for (let i = 0; i < 22; i++)
+      await tool(client, 'update_session_brief', { id, text: `v${String(i)}` });
+    expect(await count('session_entries', "session_id = ? AND kind = 'brief'", id)).toBe(20);
+    const loaded = await tool(client, 'load_session', { id });
+    expect(loaded.texts[1]).toContain('v21');
+    expect(
+      (
+        await tool(client, 'update_session_brief', {
+          id,
+          text: 'é'.repeat(9_000) /* 18,000 bytes, under the character limit */,
+        })
+      ).texts[0],
+    ).toContain('at most 16 KB');
+  });
+
+  it('marks another member’s brief as theirs, and lets only editors change it', async () => {
+    const { client, id } = await session();
+    await addMember(id, 'user-2', 'editor');
+    await addMember(id, 'user-3', 'viewer');
+    await tool(await connect('user-2'), 'update_session_brief', { id, text: 'Their brief' });
+    const loaded = await tool(client, 'load_session', { id });
+    expect(loaded.texts[1]).toMatch(/BEGIN ENTRY BY ANOTHER MEMBER/);
+    const viewer = await tool(await connect('user-3'), 'update_session_brief', { id, text: 'x' });
+    expect(viewer.texts[0]).toContain('read this session but not add');
+    const secret = await tool(client, 'update_session_brief', {
+      id,
+      text: 'key: sk-ant-api03-' + 'a'.repeat(40),
+    });
+    expect(secret.texts[0]).toContain('Not saved');
+  });
+
+  it('returns only newer entries with since, one kind with kind, in the order they were saved', async () => {
+    const { client, id } = await session();
+    const first = saved((await tool(client, 'save_to_session', { id, text: 'one' })).texts);
+    await tool(client, 'save_to_session', { id, text: 'two', kind: 'decision' });
+    await tool(client, 'save_to_session', { id, text: 'three', kind: 'question' });
+    const since = await tool(client, 'load_session', { id, since: first });
+    expect(since.texts.slice(1).map((t) => t.split('\n')[1])).toEqual(['three', 'two']);
+    const decisions = await tool(client, 'load_session', { id, kind: 'decision' });
+    expect(decisions.texts).toHaveLength(2);
+    expect(decisions.texts[1]).toMatch(/^\[decision · /);
+  });
+
+  it('replies to an entry of the same session only', async () => {
+    const { client, id } = await session();
+    const question = saved(
+      (await tool(client, 'save_to_session', { id, text: 'Which date?', kind: 'question' })).texts,
+    );
+    expect(
+      (await tool(client, 'save_to_session', { id, text: 'Friday', replyTo: question })).error,
+    ).toBe(false);
+    expect((await tool(client, 'load_session', { id })).texts[1]).toContain(`reply to ${question}`);
+    const other = await session('user-1');
+    const elsewhere = await tool(client, 'save_to_session', {
+      id: other.id,
+      text: 'x',
+      replyTo: question,
+    });
+    expect(elsewhere.texts[0]).toContain('no entry with that ID in this session');
+  });
+
+  it('counts other members’ entries since you last loaded the session', async () => {
+    const { client, id } = await session();
+    await addMember(id, 'user-2', 'editor');
+    await tool(client, 'save_to_session', { id, text: 'mine' });
+    await tool(await connect('user-2'), 'save_to_session', { id, text: 'theirs' });
+    const list = async () =>
+      parsed<{ id: string; newForYou: number }[]>((await tool(client, 'list_sessions')).texts).find(
+        (s) => s.id === id,
+      )?.newForYou;
+    // As if user-1 last loaded it before either entry.
+    await env.DB.prepare(
+      "UPDATE session_members SET last_read_at = 0 WHERE session_id = ? AND uid = 'user-1'",
+    )
+      .bind(id)
+      .run();
+    expect(await list()).toBe(1);
+    // Paging back doesn't count as having seen the newest; loading them does.
+    await tool(client, 'load_session', { id, before: 'nothing' });
+    expect(await list()).toBe(1);
+    const loaded = await tool(client, 'load_session', { id });
+    expect(parsed<{ yourPreviousLoad: string }>(loaded.texts).yourPreviousLoad).toBe(
+      '1970-01-01T00:00:00.000Z',
+    );
+    expect(await list()).toBe(0);
+  });
+
+  it('renames for the owner only, and starts a brief from the user’s own prompt only', async () => {
+    const { client, id } = await session();
+    await addMember(id, 'user-2', 'editor');
+    expect((await tool(await connect('user-2'), 'rename_session', { id, title: 'X' })).error).toBe(
+      true,
+    );
+    expect((await tool(client, 'rename_session', { id, title: 'Launch v2' })).error).toBe(false);
+    expect(await count('shared_sessions', "id = ? AND title = 'Launch v2'", id)).toBe(1);
+
+    const prompt = parsed<{ id: string }>(
+      (await tool(client, 'save_prompt', { title: 'Plan', body: 'Plan the launch.' })).texts,
+    );
+    const seeded = parsed<{ id: string }>(
+      (await tool(client, 'create_session', { title: 'From prompt', fromPromptId: prompt.id }))
+        .texts,
+    );
+    expect((await tool(client, 'load_session', { id: seeded.id })).texts[1]).toContain(
+      'Plan the launch.',
+    );
+    const theirs = await publicPrompt('user-2', 'Theirs', 'Their text');
+    const refused = await tool(client, 'create_session', { title: 'T', fromPromptId: theirs });
+    expect(refused.texts[0]).toContain('Copy someone else’s prompt first');
   });
 });

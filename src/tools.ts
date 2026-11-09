@@ -17,13 +17,17 @@ import {
 } from './prompts';
 import {
   SessionError,
+  ENTRY_KINDS,
   createSession,
   deleteEntry,
   deleteSession,
   listSessions,
   loadSession,
+  renameSession,
   saveToSession,
+  updateBrief,
   type Entry,
+  type EntryKind,
 } from './sessions';
 
 /**
@@ -72,7 +76,7 @@ function promptResult(prompt: Prompt): Result {
 }
 
 function entryText(entry: Entry): string {
-  const head = `[${entry.createdAt}${entry.label ? ` · ${entry.label}` : ''} · id ${entry.id}]`;
+  const head = `[${entry.kind === 'brief' ? 'BRIEF · ' : ''}${entry.kind !== 'brief' && entry.kind !== 'note' ? `${entry.kind} · ` : ''}${entry.createdAt}${entry.label ? ` · ${entry.label}` : ''} · id ${entry.id}${entry.replyTo ? ` · reply to ${entry.replyTo}` : ''}]`;
   if (entry.mine) return `${head} written by you\n${entry.text}`;
   const by = entry.author ? `@${entry.author}` : 'another member';
   return `${head} written by ${by}\n${untrusted('ENTRY BY ANOTHER MEMBER', entry.text)}`;
@@ -320,16 +324,54 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Create a shared session',
       description:
-        'Creates a shared session owned by the user. Only they can read it until they invite people on promptshare.cc.',
-      inputSchema: z.object({ title: z.string().max(200) }),
+        'Creates a shared session owned by the user. Only they can read it until they invite people on promptshare.cc. With fromPromptId, one of the user’s own prompts becomes the session’s brief.',
+      inputSchema: z.object({
+        title: z.string().max(200),
+        fromPromptId: z
+          .string()
+          .max(64)
+          .optional()
+          .describe('One of the user’s own prompts, to start the brief with.'),
+      }),
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
       _meta: STATE_META,
     },
-    guarded(SCOPES.state, async ({ title }: { title: string }) => {
-      const session = await createSession(db, caller.uid, now(), title);
-      await log('session.created', { session: session.id });
-      return json(session);
-    }),
+    guarded(
+      SCOPES.state,
+      async ({ title, fromPromptId }: { title: string; fromPromptId?: string | undefined }) => {
+        // Only the user's own prompt: the brief is shown as theirs, so another user's text must
+        // not arrive there unmarked. Copy someone else's prompt first.
+        const prompt = fromPromptId ? await getPrompt(db, caller.uid, fromPromptId) : null;
+        if (fromPromptId && !prompt?.mine) {
+          return fail('No prompt of yours with that ID. Copy someone else’s prompt first.');
+        }
+        const session = await createSession(db, caller.uid, now(), title);
+        await log('session.created', { session: session.id });
+        if (prompt) await updateBrief(db, secret, caller, now(), session.id, prompt.body);
+        return json(session);
+      },
+    ),
+  );
+
+  server.registerTool(
+    'rename_session',
+    {
+      title: 'Rename a shared session',
+      description: 'Changes the title of a shared session the user owns, for every member.',
+      inputSchema: z.object({ id, title: z.string().max(200) }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      _meta: STATE_META,
+    },
+    guarded(SCOPES.state, async ({ id, title }: { id: string; title: string }) =>
+      (await renameSession(db, caller.uid, now(), id, title))
+        ? text('Renamed.')
+        : fail('No session you own with that ID.'),
+    ),
   );
 
   server.registerTool(
@@ -337,33 +379,74 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Load a shared session',
       description:
-        'Reads a shared session’s entries, newest first, each with when it was written and by whom: the user, or another member. Pass `before` with the oldest entry’s ID to read further back.',
+        'Reads a shared session: first its brief (the current state: goal, decisions, open questions, next steps), then its entries, newest first, each with its kind, when it was written and by whom: the user, or another member. `since` returns only entries newer than an entry ID; `before` reads further back; `kind` keeps one kind of entry.',
       inputSchema: z.object({
         id,
-        before: z.string().max(64).optional().describe('Read entries older than this entry ID.'),
+        since: z.string().max(64).optional().describe('Only entries newer than this entry ID.'),
+        before: z.string().max(64).optional().describe('Only entries older than this entry ID.'),
+        kind: z.enum(ENTRY_KINDS).optional().describe('Only entries of this kind.'),
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
       _meta: STATE_META,
     },
-    guarded(SCOPES.state, async ({ id, before }: { id: string; before?: string | undefined }) => {
-      const session = await loadSession(db, secret, caller.uid, id, before);
-      if (!session) return fail('No shared session with that ID that you belong to.');
-      const header = JSON.stringify(
-        {
-          title: session.title,
-          yourRole: session.role,
-          entries: session.entries.length,
-          more: session.more,
-        },
-        null,
-        2,
-      );
-      return {
-        content: [
-          { type: 'text', text: header },
-          ...session.entries.map((entry) => ({ type: 'text' as const, text: entryText(entry) })),
-        ],
-      };
+    guarded(
+      SCOPES.state,
+      async ({
+        id,
+        since,
+        before,
+        kind,
+      }: {
+        id: string;
+        since?: string | undefined;
+        before?: string | undefined;
+        kind?: EntryKind | undefined;
+      }) => {
+        const session = await loadSession(db, secret, caller.uid, id, {
+          since,
+          before,
+          kind,
+          markReadAt: now(),
+        });
+        if (!session) return fail('No shared session with that ID that you belong to.');
+        const header = JSON.stringify(
+          {
+            title: session.title,
+            yourRole: session.role,
+            briefVersions: session.briefVersions,
+            entries: session.entries.length,
+            more: session.more,
+            yourPreviousLoad: session.lastLoadedAt,
+          },
+          null,
+          2,
+        );
+        return {
+          content: [
+            { type: 'text', text: header },
+            ...(session.brief ? [{ type: 'text' as const, text: entryText(session.brief) }] : []),
+            ...session.entries.map((entry) => ({ type: 'text' as const, text: entryText(entry) })),
+          ],
+        };
+      },
+    ),
+  );
+
+  server.registerTool(
+    'update_session_brief',
+    {
+      title: 'Update a session’s brief',
+      description:
+        'Replaces the brief of a shared session: the one text that says where things stand (goal, decisions, open questions, next steps). Everyone in the session can read it. Earlier versions are kept, with who wrote them. In sessions with other members, text that looks like a password, key or token is refused.',
+      inputSchema: z.object({ id, text: z.string().max(16 * 1024) }),
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+      _meta: STATE_META,
+    },
+    guarded(SCOPES.state, async ({ id, text: body }: { id: string; text: string }) => {
+      const brief = await updateBrief(db, secret, caller, now(), id, body);
+      if (!brief) return fail('No shared session with that ID that you belong to.');
+      await log('session.brief_updated', { session: id, entry: brief.id });
+      return await withConsentNote(json({ saved: brief.id, createdAt: brief.createdAt }));
     }),
   );
 
@@ -372,11 +455,13 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Save to a shared session',
       description:
-        'Adds text the user wants kept, such as a summary, decisions or state to continue from, as an entry in a shared session. Everyone in the session can read it. In sessions with other members, text that looks like a password, key or token is refused.',
+        'Adds text the user wants kept as an entry in a shared session, of one kind: note, decision, question, task, summary or artifact (code or a document). It can answer another entry. Everyone in the session can read it. In sessions with other members, text that looks like a password, key or token is refused.',
       inputSchema: z.object({
         id,
         text: z.string().max(64 * 1024),
         label: z.string().max(200).optional().describe('A short name for this entry.'),
+        kind: z.enum(ENTRY_KINDS).default('note'),
+        replyTo: z.string().max(64).optional().describe('The ID of the entry this one answers.'),
       }),
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
       _meta: STATE_META,
@@ -387,13 +472,20 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
         id,
         text: body,
         label,
+        kind,
+        replyTo,
       }: {
         id: string;
         text: string;
         label?: string | undefined;
+        kind: EntryKind;
+        replyTo?: string | undefined;
       }) => {
         try {
-          const entry = await saveToSession(db, secret, caller, now(), id, body, label);
+          const entry = await saveToSession(db, secret, caller, now(), id, body, label, {
+            kind,
+            replyTo,
+          });
           if (!entry) return fail('No shared session with that ID that you belong to.');
           await log('session.entry_added', { session: id, entry: entry.id });
           return await withConsentNote(json({ saved: entry.id, createdAt: entry.createdAt }));

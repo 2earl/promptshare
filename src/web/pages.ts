@@ -1,7 +1,14 @@
 import { SESSION_LIMITS } from '../sessions';
 import { PROMPT_LIMITS, type Prompt, type PromptSummary } from '../prompts';
 import { SHARE_LIMITS, type Share } from '../shares';
-import type { Entry, Invitation, Member, SessionSummary } from '../sessions';
+import {
+  ENTRY_KINDS,
+  type Entry,
+  type EntryKind,
+  type Invitation,
+  type Member,
+  type SessionSummary,
+} from '../sessions';
 import { SENSITIVE_CONSENT_TEXT, type ConsentDecision } from '../consent';
 import { ACTIONS, type Decision, type Message, type ReportedContent } from '../moderation';
 import { decisionText } from '../notices';
@@ -293,7 +300,7 @@ export function sessionList(sessions: SessionSummary[], error: string | null): s
   const rows = sessions
     .map(
       (s) => `<li><a href="/sessions/${esc(s.id)}"><span class="item-title">${esc(s.title)}</span>
-<span class="item-meta">${s.role === 'owner' ? 'Yours' : s.role === 'editor' ? 'You can add to it' : 'You can read it'} · ${String(s.entries)} ${s.entries === 1 ? 'entry' : 'entries'} · ${String(s.members)} ${s.members === 1 ? 'member' : 'members'} · changed ${esc(date(s.updatedAt))}</span></a></li>`,
+<span class="item-meta">${s.newForYou ? `<span class="tag">${String(s.newForYou)} new</span> ` : ''}${s.role === 'owner' ? 'Yours' : s.role === 'editor' ? 'You can add to it' : 'You can read it'} · ${String(s.entries)} ${s.entries === 1 ? 'entry' : 'entries'} · ${String(s.members)} ${s.members === 1 ? 'member' : 'members'} · changed ${esc(date(s.updatedAt))}</span></a></li>`,
     )
     .join('');
   return layout(
@@ -315,6 +322,8 @@ export interface SessionPage {
   id: string;
   title: string;
   role: string;
+  brief: Entry | null;
+  briefVersions: number;
   entries: Entry[];
   more: boolean;
   members: Member[];
@@ -323,17 +332,86 @@ export interface SessionPage {
 
 const who = (handle: string | null) => (handle ? `@${esc(handle)}` : 'a member without a handle');
 
+export interface EntryDraft {
+  text: string;
+  label: string;
+  kind: EntryKind;
+  replyTo: string;
+}
+
+const KIND_NAME: Record<EntryKind, string> = {
+  note: 'Note',
+  decision: 'Decision',
+  question: 'Question',
+  task: 'Task',
+  summary: 'Summary',
+  artifact: 'Artifact',
+};
+
+const reportLink = (sessionId: string, entryId: string) =>
+  `<a class="text-link" href="/report?url=${encodeURIComponent(`https://promptshare.cc/sessions/${sessionId}/entries/${entryId}`)}">Report</a>`;
+
+function briefSection(session: SessionPage, briefDraft: string, canWrite: boolean): string {
+  const brief = session.brief;
+  return `<section class="members" aria-labelledby="brief-title">
+<h2 id="brief-title">Brief</h2>
+<p class="hint">Where things stand: the goal, decisions, open questions and next steps. Assistants read it first. Each change keeps the earlier version.</p>
+${
+  brief
+    ? `<article class="entry${brief.mine ? '' : ' entry-other'}" id="brief">
+<header><span>${brief.mine ? 'You' : who(brief.author)} · ${esc(date(brief.createdAt))}${session.briefVersions > 1 ? ` · <a class="text-link" href="/sessions/${esc(session.id)}/brief">${String(session.briefVersions - 1)} earlier ${session.briefVersions === 2 ? 'version' : 'versions'}</a>` : ''}</span>
+<span class="entry-actions">${brief.mine ? '' : reportLink(session.id, brief.id)}</span></header>
+<pre>${esc(brief.text)}</pre>
+</article>`
+    : '<p class="empty">No brief yet.</p>'
+}
+${
+  canWrite
+    ? `<form class="form" method="post" action="/sessions/${esc(session.id)}/brief">
+<label for="brief-text">${brief ? 'Change the brief' : 'Write the brief'}</label>
+<textarea id="brief-text" name="brief" rows="6" required class="mono" maxlength="${String(SESSION_LIMITS.brief)}">${esc(briefDraft)}</textarea>
+<p><button class="button button-quiet" type="submit">Save brief</button></p>
+</form>`
+    : ''
+}
+</section>`;
+}
+
+export function briefHistoryPage(sessionId: string, title: string, versions: Entry[]): string {
+  const rows = versions
+    .map(
+      (v, i) => `<article class="entry${v.mine ? '' : ' entry-other'}">
+<header><span>${i === 0 ? '<strong>Current</strong> · ' : ''}${v.mine ? 'You' : who(v.author)} · ${esc(date(v.createdAt))}</span>
+<span class="entry-actions">${v.mine ? '' : reportLink(sessionId, v.id)}</span></header>
+<pre>${esc(v.text)}</pre>
+</article>`,
+    )
+    .join('');
+  return layout(
+    'Brief history',
+    `<p class="crumb"><a href="/sessions/${esc(sessionId)}">${esc(title)}</a></p>
+<h1>Brief history</h1>
+<p class="lede">The last ${String(SESSION_LIMITS.briefVersions)} versions of the brief, newest first.</p>
+${rows}`,
+    { signedIn: true },
+    '/sessions',
+  );
+}
+
 export function sessionView(
   session: SessionPage,
   error: string | null,
-  draft: { text: string; label: string },
+  draft: EntryDraft,
   newLink: string | null = null,
+  briefDraft = '',
 ): string {
+  const canReply = session.role !== 'viewer';
   const entries = session.entries
     .map(
       (e) => `<article class="entry${e.mine ? '' : ' entry-other'}" id="entry-${esc(e.id)}">
-<header><span>${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : who(e.author)} · ${esc(date(e.createdAt))}</span>
-<span class="entry-actions">${e.mine ? '' : `<a class="text-link" href="/report?url=${encodeURIComponent(`https://promptshare.cc/sessions/${session.id}/entries/${e.id}`)}">Report</a>`}
+<header><span>${e.kind !== 'note' && e.kind !== 'brief' ? `<span class="tag">${KIND_NAME[e.kind]}</span> ` : ''}${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : who(e.author)} · ${esc(date(e.createdAt))}${e.replyTo ? ` · <a class="text-link" href="#entry-${esc(e.replyTo)}">in reply</a>` : ''}</span>
+<span class="entry-actions">${canReply ? `<a class="text-link" href="/sessions/${esc(session.id)}?reply=${esc(e.id)}#text">Reply</a>` : ''}
+${e.mine ? '' : reportLink(session.id, e.id)}
 ${e.mine || session.role === 'owner' ? `<form method="post" action="/sessions/${esc(session.id)}/entries/${esc(e.id)}/delete"><button class="link-button danger" type="submit">Delete</button></form>` : ''}</span></header>
 <pre>${esc(e.text)}</pre>
 </article>`,
@@ -381,11 +459,15 @@ ${invitations ? `<ul class="people">${invitations}</ul>` : ''}`
     `<p class="crumb"><a href="/sessions">Shared sessions</a></p>
 <h1>${esc(session.title)}</h1>
 ${error ? `<p class="alert" role="alert">${esc(error)}</p>` : ''}
+${briefSection(session, briefDraft, canWrite)}
 ${
   canWrite
     ? `<form class="form" method="post" action="/sessions/${esc(session.id)}/entries">
-<label for="text">Add an entry</label>
+<label for="text">${draft.replyTo ? 'Reply' : 'Add an entry'}</label>
+${draft.replyTo ? `<p class="muted">Replying to <a class="text-link" href="#entry-${esc(draft.replyTo)}">this entry</a>. <a class="text-link" href="/sessions/${esc(session.id)}">Cancel</a></p><input type="hidden" name="replyTo" value="${esc(draft.replyTo)}">` : ''}
 <textarea id="text" name="text" rows="6" required class="mono">${esc(draft.text)}</textarea>
+<label for="kind">Kind</label>
+<select id="kind" name="kind">${ENTRY_KINDS.map((k) => `<option value="${k}"${draft.kind === k ? ' selected' : ''}>${KIND_NAME[k]}</option>`).join('')}</select>
 <label for="label">Label <span class="optional">optional</span></label>
 <input id="label" name="label" maxlength="${String(SESSION_LIMITS.label)}" value="${esc(draft.label)}">
 <p><button class="button" type="submit">Add entry</button></p>
@@ -395,7 +477,15 @@ ${
 ${entries || '<p class="empty">No entries yet. Ask your assistant to save where your conversation stands, or add one above.</p>'}
 ${session.more && last ? `<p><a href="/sessions/${esc(session.id)}?before=${esc(last.id)}">Older entries</a></p>` : ''}
 ${sharing}
-${owner ? `<div class="danger-zone"><a class="text-link danger" href="/sessions/${esc(session.id)}/delete">Delete session</a></div>` : ''}`,
+${
+  owner
+    ? `<form class="inline-form" method="post" action="/sessions/${esc(session.id)}/rename">
+<label for="rename">Rename</label>
+<div class="search-row"><input id="rename" name="title" required maxlength="${String(SESSION_LIMITS.title)}" value="${esc(session.title)}"><button class="button button-quiet" type="submit">Rename</button></div>
+</form>
+<div class="danger-zone"><a class="text-link danger" href="/sessions/${esc(session.id)}/delete">Delete session</a></div>`
+    : ''
+}`,
     { signedIn: true },
     '/sessions',
   );

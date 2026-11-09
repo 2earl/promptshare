@@ -16,7 +16,14 @@ export const SESSION_LIMITS = {
   /** One load returns at most this much, newest first; `before` pages back. */
   loadBytes: 256 * 1024,
   loadEntries: 50,
+  /** The brief: one text that changes; each change is a new version (§5.1). */
+  brief: 16 * 1024,
+  briefVersions: 20,
 } as const;
+
+/** What an entry is, so assistants can tell a decision from a note (§5.1). */
+export const ENTRY_KINDS = ['note', 'decision', 'question', 'task', 'summary', 'artifact'] as const;
+export type EntryKind = (typeof ENTRY_KINDS)[number];
 
 export type Role = 'owner' | 'editor' | 'viewer';
 
@@ -33,11 +40,16 @@ export interface SessionSummary {
   role: Role;
   members: number;
   entries: number;
+  /** Entries by others since you last loaded the newest ones. */
+  newForYou: number;
   updatedAt: string;
 }
 
 export interface Entry {
   id: string;
+  kind: EntryKind | 'brief';
+  /** The entry this one answers. */
+  replyTo: string | null;
   /** Written by the caller (any of their assistants), or by another member. */
   mine: boolean;
   label: string;
@@ -62,9 +74,13 @@ export async function listSessions(db: D1Database, uid: string): Promise<Session
     .prepare(
       `SELECT s.id, s.title, m.role, s.updated_at,
               (SELECT COUNT(*) FROM session_members x WHERE x.session_id = s.id) AS members,
-              (SELECT COUNT(*) FROM session_entries e WHERE e.session_id = s.id) AS entries
+              (SELECT COUNT(*) FROM session_entries e
+                 WHERE e.session_id = s.id AND e.kind <> 'brief' AND e.removed_at IS NULL) AS entries,
+              (SELECT COUNT(*) FROM session_entries e
+                 WHERE e.session_id = s.id AND e.removed_at IS NULL AND e.author_uid <> ?1
+                   AND e.created_at > COALESCE(m.last_read_at, m.added_at)) AS fresh
        FROM session_members m JOIN shared_sessions s ON s.id = m.session_id
-       WHERE m.uid = ? ORDER BY s.updated_at DESC`,
+       WHERE m.uid = ?1 ORDER BY s.updated_at DESC`,
     )
     .bind(uid)
     .all<{
@@ -74,6 +90,7 @@ export async function listSessions(db: D1Database, uid: string): Promise<Session
       updated_at: number;
       members: number;
       entries: number;
+      fresh: number;
     }>();
   return results.map((row) => ({
     id: row.id,
@@ -81,6 +98,7 @@ export async function listSessions(db: D1Database, uid: string): Promise<Session
     role: row.role,
     members: row.members,
     entries: row.entries,
+    newForYou: row.fresh,
     updatedAt: iso(row.updated_at),
   }));
 }
@@ -91,11 +109,7 @@ export async function createSession(
   now: number,
   title: string,
 ): Promise<SessionSummary> {
-  const clean = title.trim();
-  if (!clean) throw new SessionError('A session needs a title.');
-  if (clean.length > SESSION_LIMITS.title) {
-    throw new SessionError(`The title can be at most ${String(SESSION_LIMITS.title)} characters.`);
-  }
+  const clean = cleanTitle(title);
   const owned = await db
     .prepare('SELECT COUNT(*) AS n FROM shared_sessions WHERE owner_uid = ?')
     .bind(uid)
@@ -118,7 +132,112 @@ export async function createSession(
       )
       .bind(id, uid, now),
   ]);
-  return { id, title: clean, role: 'owner', members: 1, entries: 0, updatedAt: iso(now) };
+  return {
+    id,
+    title: clean,
+    role: 'owner',
+    members: 1,
+    entries: 0,
+    newForYou: 0,
+    updatedAt: iso(now),
+  };
+}
+
+function cleanTitle(title: string): string {
+  const clean = title.trim();
+  if (!clean) throw new SessionError('A session needs a title.');
+  if (clean.length > SESSION_LIMITS.title) {
+    throw new SessionError(`The title can be at most ${String(SESSION_LIMITS.title)} characters.`);
+  }
+  return clean;
+}
+
+/** Only the owner renames a session. */
+export async function renameSession(
+  db: D1Database,
+  uid: string,
+  now: number,
+  sessionId: string,
+  title: string,
+): Promise<boolean> {
+  const clean = cleanTitle(title);
+  const { meta } = await db
+    .prepare('UPDATE shared_sessions SET title = ?, updated_at = ? WHERE id = ? AND owner_uid = ?')
+    .bind(clean, now, sessionId, uid)
+    .run();
+  return meta.changes > 0;
+}
+
+interface EntryRow {
+  id: string;
+  author_uid: string;
+  client_id: string;
+  kind: EntryKind | 'brief';
+  reply_to: string | null;
+  label: string;
+  iv: number[];
+  ciphertext: number[];
+  size: number;
+  created_at: number;
+  author: string | null;
+}
+
+const ENTRY_COLUMNS = `e.id, e.author_uid, e.client_id, e.kind, e.reply_to, e.label, e.iv, e.ciphertext,
+  e.size, e.created_at, pr.handle AS author`;
+
+async function toEntry(
+  secret: string,
+  sessionId: string,
+  uid: string,
+  row: EntryRow,
+): Promise<Entry> {
+  return {
+    id: row.id,
+    kind: row.kind,
+    replyTo: row.reply_to,
+    mine: row.author_uid === uid,
+    label: row.label,
+    text: await decryptEntry(secret, sessionId, row.id, row.iv, row.ciphertext),
+    writtenWith: row.client_id,
+    author: row.author,
+    createdAt: iso(row.created_at),
+  };
+}
+
+/**
+ * An entry's place in its session: insertion order (rowid), which a clock tie can't reorder.
+ * Rowids are never stored or shown, only compared at query time, so a renumbering VACUUM (which
+ * keeps their order) doesn't matter.
+ */
+async function anchorOf(db: D1Database, sessionId: string, entryId: string | undefined) {
+  if (!entryId) return null;
+  const row = await db
+    .prepare('SELECT rowid AS position FROM session_entries WHERE id = ? AND session_id = ?')
+    .bind(entryId, sessionId)
+    .first<{ position: number }>();
+  return row?.position ?? null;
+}
+
+export interface LoadOptions {
+  /** Entries older than this entry. */
+  before?: string | undefined;
+  /** Entries newer than this entry. */
+  since?: string | undefined;
+  kind?: EntryKind | undefined;
+  /** When set, and the newest entries are loaded, they stop counting as new for the caller. */
+  markReadAt?: number | undefined;
+}
+
+export interface LoadedSession {
+  title: string;
+  role: Role;
+  /** The current brief, if anyone wrote one. */
+  brief: Entry | null;
+  briefVersions: number;
+  entries: Entry[];
+  more: boolean;
+  /** When the caller last loaded the newest entries before this load. */
+  lastLoadedAt: string | null;
 }
 
 export async function loadSession(
@@ -126,49 +245,36 @@ export async function loadSession(
   secret: string,
   uid: string,
   sessionId: string,
-  before?: string,
-): Promise<{ title: string; role: Role; entries: Entry[]; more: boolean } | null> {
-  const role = await roleOf(db, uid, sessionId);
-  if (!role) return null;
-  const session = await db
-    .prepare('SELECT title FROM shared_sessions WHERE id = ?')
-    .bind(sessionId)
-    .first<{ title: string }>();
-  if (!session) return null;
+  options: LoadOptions = {},
+): Promise<LoadedSession | null> {
+  const member = await db
+    .prepare(
+      `SELECT m.role, m.last_read_at, s.title FROM session_members m
+       JOIN shared_sessions s ON s.id = m.session_id WHERE m.session_id = ? AND m.uid = ?`,
+    )
+    .bind(sessionId, uid)
+    .first<{ role: Role; last_read_at: number | null; title: string }>();
+  if (!member) return null;
 
-  let cutoff = Number.MAX_SAFE_INTEGER;
-  let cutoffId = '';
-  if (before) {
-    const anchor = await db
-      .prepare('SELECT created_at, id FROM session_entries WHERE id = ? AND session_id = ?')
-      .bind(before, sessionId)
-      .first<{ created_at: number; id: string }>();
-    if (anchor) {
-      cutoff = anchor.created_at;
-      cutoffId = anchor.id;
-    }
-  }
+  const before = await anchorOf(db, sessionId, options.before);
+  const since = await anchorOf(db, sessionId, options.since);
   const { results } = await db
     .prepare(
-      `SELECT e.id, e.author_uid, e.client_id, e.label, e.iv, e.ciphertext, e.size, e.created_at,
-              pr.handle AS author
+      `SELECT ${ENTRY_COLUMNS}
        FROM session_entries e LEFT JOIN profiles pr ON pr.uid = e.author_uid
-       WHERE e.session_id = ? AND e.removed_at IS NULL
-         AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))
-       ORDER BY e.created_at DESC, e.id DESC LIMIT ?`,
+       WHERE e.session_id = ?1 AND e.removed_at IS NULL AND e.kind <> 'brief'
+         AND (?2 IS NULL OR e.kind = ?2)
+         AND e.rowid < ?3 AND e.rowid > ?4
+       ORDER BY e.rowid DESC LIMIT ?5`,
     )
-    .bind(sessionId, cutoff, cutoff, cutoffId || '￿', SESSION_LIMITS.loadEntries + 1)
-    .all<{
-      id: string;
-      author_uid: string;
-      client_id: string;
-      label: string;
-      iv: number[];
-      ciphertext: number[];
-      size: number;
-      created_at: number;
-      author: string | null;
-    }>();
+    .bind(
+      sessionId,
+      options.kind ?? null,
+      before ?? Number.MAX_SAFE_INTEGER,
+      since ?? 0,
+      SESSION_LIMITS.loadEntries + 1,
+    )
+    .all<EntryRow>();
 
   const entries: Entry[] = [];
   let used = 0;
@@ -182,39 +288,93 @@ export async function loadSession(
       break;
     }
     used += row.size;
-    entries.push({
-      id: row.id,
-      mine: row.author_uid === uid,
-      label: row.label,
-      text: await decryptEntry(secret, sessionId, row.id, row.iv, row.ciphertext),
-      writtenWith: row.client_id,
-      author: row.author,
-      createdAt: iso(row.created_at),
-    });
+    entries.push(await toEntry(secret, sessionId, uid, row));
   }
-  return { title: session.title, role, entries, more };
+
+  const briefs = await db
+    .prepare(
+      `SELECT ${ENTRY_COLUMNS}, (SELECT COUNT(*) FROM session_entries b
+                                 WHERE b.session_id = ?1 AND b.kind = 'brief' AND b.removed_at IS NULL) AS versions
+       FROM session_entries e LEFT JOIN profiles pr ON pr.uid = e.author_uid
+       WHERE e.session_id = ?1 AND e.kind = 'brief' AND e.removed_at IS NULL
+       ORDER BY e.rowid DESC LIMIT 1`,
+    )
+    .bind(sessionId)
+    .first<EntryRow & { versions: number }>();
+
+  // Loading the newest entries (not paging back) means the caller has seen what's new.
+  if (options.markReadAt !== undefined && !options.before) {
+    await db
+      .prepare('UPDATE session_members SET last_read_at = ? WHERE session_id = ? AND uid = ?')
+      .bind(options.markReadAt, sessionId, uid)
+      .run();
+  }
+  return {
+    title: member.title,
+    role: member.role,
+    brief: briefs ? await toEntry(secret, sessionId, uid, briefs) : null,
+    briefVersions: briefs?.versions ?? 0,
+    entries,
+    more,
+    lastLoadedAt: member.last_read_at === null ? null : iso(member.last_read_at),
+  };
 }
 
-export async function saveToSession(
+/** Earlier versions of the brief, newest first (the website's history page). */
+export async function briefHistory(
+  db: D1Database,
+  secret: string,
+  uid: string,
+  sessionId: string,
+): Promise<Entry[] | null> {
+  if (!(await roleOf(db, uid, sessionId))) return null;
+  const { results } = await db
+    .prepare(
+      `SELECT ${ENTRY_COLUMNS}
+       FROM session_entries e LEFT JOIN profiles pr ON pr.uid = e.author_uid
+       WHERE e.session_id = ? AND e.kind = 'brief' AND e.removed_at IS NULL
+       ORDER BY e.rowid DESC LIMIT ?`,
+    )
+    .bind(sessionId, SESSION_LIMITS.briefVersions)
+    .all<EntryRow>();
+  const versions: Entry[] = [];
+  for (const row of results) versions.push(await toEntry(secret, sessionId, uid, row));
+  return versions;
+}
+
+async function addEntry(
   db: D1Database,
   secret: string,
   caller: { uid: string; clientId: string },
   now: number,
   sessionId: string,
   text: string,
-  label = '',
+  fields: { label: string; kind: EntryKind | 'brief'; replyTo: string | null },
 ): Promise<Entry | null> {
   const role = await roleOf(db, caller.uid, sessionId);
   if (!role) return null;
   if (role === 'viewer') throw new SessionError('You can read this session but not add to it.');
   if (!text.trim()) throw new SessionError('Nothing to save.');
   const size = bytes(text);
-  if (size > SESSION_LIMITS.entry) {
-    throw new SessionError(`One entry can be at most ${String(SESSION_LIMITS.entry / 1024)} KB.`);
+  const max = fields.kind === 'brief' ? SESSION_LIMITS.brief : SESSION_LIMITS.entry;
+  if (size > max) {
+    throw new SessionError(
+      `${fields.kind === 'brief' ? 'The brief' : 'One entry'} can be at most ${String(max / 1024)} KB.`,
+    );
   }
-  const cleanLabel = label.trim();
+  const cleanLabel = fields.label.trim();
   if (cleanLabel.length > SESSION_LIMITS.label) {
     throw new SessionError(`The label can be at most ${String(SESSION_LIMITS.label)} characters.`);
+  }
+  if (fields.replyTo) {
+    const target = await db
+      .prepare(
+        "SELECT 1 AS ok FROM session_entries WHERE id = ? AND session_id = ? AND removed_at IS NULL AND kind <> 'brief'",
+      )
+      .bind(fields.replyTo, sessionId)
+      .first<{ ok: number }>();
+    if (!target)
+      throw new SessionError('There is no entry with that ID in this session to reply to.');
   }
 
   const stats = await db
@@ -241,17 +401,44 @@ export async function saveToSession(
 
   const id = crypto.randomUUID();
   const { iv, ciphertext } = await encryptEntry(secret, sessionId, id, text);
-  await db.batch([
+  const statements = [
     db
       .prepare(
-        `INSERT INTO session_entries (id, session_id, author_uid, client_id, label, iv, ciphertext, size, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO session_entries (id, session_id, author_uid, client_id, kind, reply_to, label, iv, ciphertext, size, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(id, sessionId, caller.uid, caller.clientId, cleanLabel, iv, ciphertext, size, now),
+      .bind(
+        id,
+        sessionId,
+        caller.uid,
+        caller.clientId,
+        fields.kind,
+        fields.replyTo,
+        cleanLabel,
+        iv,
+        ciphertext,
+        size,
+        now,
+      ),
     db.prepare('UPDATE shared_sessions SET updated_at = ? WHERE id = ?').bind(now, sessionId),
-  ]);
+  ];
+  if (fields.kind === 'brief') {
+    // Keeps the newest versions; one removed by moderation stays as evidence (LEGAL.md §4).
+    statements.push(
+      db
+        .prepare(
+          `DELETE FROM session_entries WHERE session_id = ?1 AND kind = 'brief' AND removed_at IS NULL
+             AND id NOT IN (SELECT id FROM session_entries WHERE session_id = ?1 AND kind = 'brief'
+                              AND removed_at IS NULL ORDER BY rowid DESC LIMIT ?2)`,
+        )
+        .bind(sessionId, SESSION_LIMITS.briefVersions),
+    );
+  }
+  await db.batch(statements);
   return {
     id,
+    kind: fields.kind,
+    replyTo: fields.replyTo,
     mine: true,
     label: cleanLabel,
     text,
@@ -259,6 +446,43 @@ export async function saveToSession(
     author: null,
     createdAt: iso(now),
   };
+}
+
+export async function saveToSession(
+  db: D1Database,
+  secret: string,
+  caller: { uid: string; clientId: string },
+  now: number,
+  sessionId: string,
+  text: string,
+  label = '',
+  options: { kind?: EntryKind | undefined; replyTo?: string | undefined } = {},
+): Promise<Entry | null> {
+  const kind = options.kind ?? 'note';
+  if (!(ENTRY_KINDS as readonly string[]).includes(kind)) {
+    throw new SessionError(`An entry is one of: ${ENTRY_KINDS.join(', ')}.`);
+  }
+  return addEntry(db, secret, caller, now, sessionId, text, {
+    label,
+    kind,
+    replyTo: options.replyTo?.trim() || null,
+  });
+}
+
+/** Replaces the session's brief with a new version; earlier versions stay (at most 20). */
+export async function updateBrief(
+  db: D1Database,
+  secret: string,
+  caller: { uid: string; clientId: string },
+  now: number,
+  sessionId: string,
+  text: string,
+): Promise<Entry | null> {
+  return addEntry(db, secret, caller, now, sessionId, text, {
+    label: '',
+    kind: 'brief',
+    replyTo: null,
+  });
 }
 
 /** Only the owner deletes a session, with every entry, for every member. */

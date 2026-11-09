@@ -1205,3 +1205,76 @@ describe('sharing a prompt with people (DESIGN §4.1)', () => {
     expect(await count('share_misses')).toBe(1);
   });
 });
+
+describe('sessions on the website (phase S2)', () => {
+  async function newSession(cookie: string) {
+    const created = await post('/sessions', { title: 'Launch' }, cookie);
+    return (created.headers.get('Location') ?? '').split('/').pop() ?? '';
+  }
+
+  it('writes the brief, keeps its history, and lets members report someone else’s version', async () => {
+    const owner = (await signIn('user-1')).cookie;
+    const id = await newSession(owner);
+    expect((await post(`/sessions/${id}/brief`, { brief: 'Goal: ship' }, owner)).status).toBe(303);
+    await post(`/sessions/${id}/brief`, { brief: 'Goal: ship on Friday' }, owner);
+    const page = await (await get(`/sessions/${id}`, owner)).text();
+    expect(page).toContain('Goal: ship on Friday');
+    expect(page).toContain('1 earlier version');
+    await addMember(id, 'user-2', 'viewer');
+    const viewer = (await signIn('user-2')).cookie;
+    const history = await (await get(`/sessions/${id}/brief`, viewer)).text();
+    expect(history).toContain('Goal: ship</pre>');
+    expect(history).toContain('Report');
+    // A viewer sees the brief but no form to change it, and the server refuses it too.
+    expect(await (await get(`/sessions/${id}`, viewer)).text()).not.toContain('name="brief"');
+    expect((await post(`/sessions/${id}/brief`, { brief: 'x' }, viewer)).status).toBe(400);
+    expect((await get(`/sessions/${id}/brief`, (await signIn('user-3')).cookie)).status).toBe(404);
+  });
+
+  it('adds entries with a kind and as replies, and shows what’s new', async () => {
+    const owner = (await signIn('user-1')).cookie;
+    const id = await newSession(owner);
+    await addMember(id, 'user-2', 'editor');
+    const member = (await signIn('user-2')).cookie;
+    await post(`/sessions/${id}/entries`, { text: 'Which date?', kind: 'question' }, member);
+    const question = await env.DB.prepare(
+      "SELECT id FROM session_entries WHERE session_id = ? AND kind = 'question'",
+    )
+      .bind(id)
+      .first<{ id: string }>();
+    await env.DB.prepare(
+      "UPDATE session_members SET last_read_at = 0 WHERE session_id = ? AND uid = 'user-1'",
+    )
+      .bind(id)
+      .run();
+    expect(await (await get('/sessions', owner)).text()).toContain('1 new');
+
+    const reply = await (await get(`/sessions/${id}?reply=${question?.id ?? ''}`, owner)).text();
+    expect(reply).toContain('Replying to');
+    await post(
+      `/sessions/${id}/entries`,
+      { text: 'Friday', kind: 'decision', replyTo: question?.id ?? '' },
+      owner,
+    );
+    const page = await (await get(`/sessions/${id}`, owner)).text();
+    expect(page).toContain('<span class="tag">Question</span>');
+    expect(page).toContain('<span class="tag">Decision</span>');
+    expect(page).toContain(`href="#entry-${question?.id ?? ''}">in reply</a>`);
+    expect(await (await get('/sessions', owner)).text()).not.toContain(' new</span>');
+    // An unknown kind is stored as a note.
+    await post(`/sessions/${id}/entries`, { text: 'x', kind: 'brief' }, owner);
+    expect(await count('session_entries', "session_id = ? AND kind = 'brief'", id)).toBe(0);
+  });
+
+  it('renames for the owner only', async () => {
+    const owner = (await signIn('user-1')).cookie;
+    const id = await newSession(owner);
+    await addMember(id, 'user-2', 'editor');
+    expect(
+      (await post(`/sessions/${id}/rename`, { title: 'X' }, (await signIn('user-2')).cookie))
+        .status,
+    ).toBe(404);
+    expect((await post(`/sessions/${id}/rename`, { title: 'Launch v2' }, owner)).status).toBe(303);
+    expect(await count('shared_sessions', "id = ? AND title = 'Launch v2'", id)).toBe(1);
+  });
+});

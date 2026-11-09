@@ -85,7 +85,7 @@ export async function exportUserData(
       // Every entry in sessions the user owns, and the user's own entries everywhere else.
       db
         .prepare(
-          `SELECT e.id, e.session_id, e.author_uid, e.client_id, e.label, e.iv, e.ciphertext, e.created_at
+          `SELECT e.id, e.session_id, e.author_uid, e.client_id, e.kind, e.reply_to, e.label, e.iv, e.ciphertext, e.created_at
          FROM session_entries e JOIN shared_sessions s ON s.id = e.session_id
          WHERE s.owner_uid = ?1 OR e.author_uid = ?1 ORDER BY e.created_at`,
         )
@@ -111,6 +111,8 @@ export async function exportUserData(
       id: row.id,
       writtenBy: row.author_uid === uid ? 'you' : 'another member',
       writtenWith: row.client_id,
+      kind: row.kind,
+      replyTo: row.reply_to,
       label: row.label,
       text: await decryptEntry(
         secret,
@@ -204,7 +206,7 @@ export async function exportUserData(
         .all()
     ).results,
     notes: [
-      'sessionEntries has every entry in the sessions you own, and the entries you wrote in other people’s sessions.',
+      'sessionEntries has every entry in the sessions you own, and the entries you wrote in other people’s sessions. Entries of kind "brief" are versions of a session’s brief.',
       'Other members are not named: Prompt share shows you only what you can already see.',
       'Security log entries are kept for 90 days and never contain prompt or session text.',
     ],

@@ -37,6 +37,8 @@ assistant path is the gateway's
 | User enumeration | No directory or search of users; handles appear only on public prompts | Review |
 | Enumeration through sharing by email (S1): "does this address have an account?" | Accepted in part (owner, 2026-11-09): unknown addresses are refused. 3 within an hour lock sharing for 10 minutes, doubling; 20 a day lock it for the day; while locked every address is refused; 200 shares a day. Checking a few addresses stays possible | Tests: lock, doubling, daily lock, refusal while locked |
 | Injected text makes an assistant share a private prompt with an attacker | Sharing is website-only (D7); no MCP tool shares | Test: no share tool |
+| A member rewrites the session brief to steer others' assistants (S2) | The brief is an entry: versions by others reach assistants inside the untrusted-content boundary, with who wrote them; every version is kept (20) and reportable; viewers can't change it; credential check applies | Tests |
+| Another user's prompt text presented as the user's own brief (`create_session` with `fromPromptId`) | Only the user's own prompts | Test |
 | Abuse of the report form (spam, fake reports) | Rate limits per network; no account needed by law, so reports are queued, never acted on automatically | Tests |
 | Unlawful public content | Notice and action, statements of reasons, Art. 18 procedure (LEGAL.md) | Tests: report → decision → statement → contest → reversal |
 | Someone else uses the moderation view | Only `OWNER_UID`, and only with a second factor verified through login in the last 15 minutes; 404 for everyone else; forms refuse a stale second factor | Tests; each check broken on purpose is caught |

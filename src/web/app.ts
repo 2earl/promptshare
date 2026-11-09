@@ -40,7 +40,12 @@ import {
   listInvitations,
   listMembers,
   listSessions,
+  briefHistory,
   loadSession,
+  renameSession,
+  updateBrief,
+  ENTRY_KINDS,
+  type EntryKind,
   previewInvitation,
   removeMember,
   revokeInvitation,
@@ -424,26 +429,83 @@ export function createApp(now: () => number) {
     c: AppContext,
     uid: string,
     error: string | null,
-    draft = { text: '', label: '' },
+    draft: pages.EntryDraft = {
+      text: '',
+      label: '',
+      kind: 'note',
+      replyTo: c.req.query('reply') ?? '',
+    },
     newLink: string | null = null,
+    briefDraft: string | null = null,
   ) {
     const id = c.req.param('id') ?? '';
-    const session = await loadSession(
-      c.env.DB,
-      c.env.STATE_ENCRYPTION_KEY,
-      uid,
-      id,
-      c.req.query('before'),
-    );
+    const session = await loadSession(c.env.DB, c.env.STATE_ENCRYPTION_KEY, uid, id, {
+      before: c.req.query('before'),
+      markReadAt: error ? undefined : c.get('now'),
+    });
     if (!session) return notFound(c, 'session');
     const members = (await listMembers(c.env.DB, uid, id)) ?? [];
     const invitations = await listInvitations(c.env.DB, uid, c.get('now'), id);
     return html(
       c,
-      pages.sessionView({ id, ...session, members, invitations }, error, draft, newLink),
+      pages.sessionView(
+        { id, ...session, members, invitations },
+        error,
+        draft,
+        newLink,
+        briefDraft ?? session.brief?.text ?? '',
+      ),
       error ? 400 : 200,
     );
   }
+
+  const entryKind = (value: string): EntryKind =>
+    (ENTRY_KINDS as readonly string[]).includes(value) ? (value as EntryKind) : 'note';
+
+  app.post('/sessions/:id/brief', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const body = text((await c.req.parseBody()).brief);
+    try {
+      const brief = await updateBrief(
+        c.env.DB,
+        c.env.STATE_ENCRYPTION_KEY,
+        { uid, clientId: WEBSITE_CLIENT },
+        c.get('now'),
+        c.req.param('id'),
+        body,
+      );
+      if (!brief) return notFound(c, 'session');
+      return c.redirect(`/sessions/${c.req.param('id')}`, 303);
+    } catch (error) {
+      if (!(error instanceof SessionError)) throw error;
+      return showSession(c, uid, error.message, undefined, null, body);
+    }
+  });
+
+  app.get('/sessions/:id/brief', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const id = c.req.param('id');
+    const versions = await briefHistory(c.env.DB, c.env.STATE_ENCRYPTION_KEY, uid, id);
+    const session = versions && (await listSessions(c.env.DB, uid)).find((s) => s.id === id);
+    if (!versions || !session) return notFound(c, 'session');
+    return html(c, pages.briefHistoryPage(id, session.title, versions));
+  });
+
+  app.post('/sessions/:id/rename', async (c) => {
+    const uid = requireUser(c);
+    if (typeof uid !== 'string') return uid;
+    const title = text((await c.req.parseBody()).title);
+    try {
+      if (!(await renameSession(c.env.DB, uid, c.get('now'), c.req.param('id'), title)))
+        return notFound(c, 'session');
+      return c.redirect(`/sessions/${c.req.param('id')}`, 303);
+    } catch (error) {
+      if (!(error instanceof SessionError)) throw error;
+      return showSession(c, uid, error.message);
+    }
+  });
 
   /** Sharing needs a handle: send the user to choose one, then back. */
   async function requireHandle(
@@ -464,7 +526,12 @@ export function createApp(now: () => number) {
     const uid = requireUser(c);
     if (typeof uid !== 'string') return uid;
     const form = await c.req.parseBody();
-    const draft = { text: text(form.text), label: text(form.label) };
+    const draft = {
+      text: text(form.text),
+      label: text(form.label),
+      kind: entryKind(text(form.kind)),
+      replyTo: text(form.replyTo),
+    };
     try {
       const entry = await saveToSession(
         c.env.DB,
@@ -474,6 +541,7 @@ export function createApp(now: () => number) {
         c.req.param('id'),
         draft.text,
         draft.label,
+        { kind: draft.kind, replyTo: draft.replyTo },
       );
       if (!entry) return notFound(c, 'session');
       return c.redirect(`/sessions/${c.req.param('id')}`, 303);

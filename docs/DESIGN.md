@@ -161,8 +161,10 @@ assistants (or people on the website) add. Each entry records:
 - the assistant that wrote it (the gateway's client ID);
 - the time.
 
-Entries are added and deleted, never edited, so it stays clear who wrote what. Loading a session
-returns its newest entries first, up to a size limit, with the author of each.
+Entries are added and deleted, never edited, so it stays clear who wrote what. Each has a kind
+(note, decision, question, task, summary, artifact) and can reply to another entry. A session also
+has a **brief** (§5.1). Loading a session returns the brief, then its newest entries first, up to
+a size limit, with the author of each.
 
 | Role | Can |
 |---|---|
@@ -200,6 +202,19 @@ real use:
 | Tasks between members | A task is text | `task` entries with status and an assignee handle; `update_task` | S3 |
 | Keeping a copy | No export of one session | Markdown download on the website | S3 |
 
+How S2 is built:
+- **The brief is stored as entries of kind `brief`:** each change is a new one, and the newest
+  not removed is current. So the brief gets entries' encryption, size limit, credential check,
+  reporting, moderation, deletion and export unchanged. The last 20 versions are kept; at most
+  16 KB each. A version by another member reaches assistants inside the untrusted-content
+  boundary.
+- **Order is insertion order** (SQLite's rowid), not time: two entries saved in the same second
+  keep their order for `since` and `before`.
+- **New for you:** each member's `last_read_at` is set when they load the newest entries (not
+  when paging back). `list_sessions` counts other members' entries after it.
+- **Starting from a prompt** works with the user's own prompts only: the brief would show
+  another user's text as the user's. Copy it first.
+
 Kept as they are:
 - **Entries are never edited** (it stays clear who wrote what). The brief is the part that is
   meant to change, and it has a history.
@@ -222,8 +237,10 @@ trust: 'first-party' }`. Tools appear to assistants as `promptshare__<tool>`.
 | `copy_prompt` | Copy a public or shared prompt into your own | `write` |
 | `list_sessions` | Sessions you own or belong to | `mcp:promptshare.state` |
 | `create_session` | A new session, owned by you | `state` |
-| `load_session` | Read a session's entries | `state` |
-| `save_to_session` | Add an entry | `state` |
+| `load_session` | Read a session's brief and entries (`since`, `before`, `kind`) | `state` |
+| `save_to_session` | Add an entry of a kind, optionally as a reply | `state` |
+| `update_session_brief` | Replace the session's brief; earlier versions stay | `state` |
+| `rename_session` | Rename a session you own | `state` |
 | `delete_session_entry` | Delete an entry you wrote (the owner: any entry) | `state` |
 | `delete_session` | Delete a session you own, for every member | `state` |
 
@@ -268,8 +285,8 @@ repositories.
 | `prompts` (+ FTS index) | §4 fields, `owner_uid`, copied-from | Until deleted by the owner or account deletion |
 | `prompt_shares` | prompt, author, recipient's `uid`, the address the author typed | Until the author stops sharing, the recipient removes it, or either account is deleted |
 | `share_misses`, `share_locks` | when an author tried an address without an account; their lock | 1 day |
-| `shared_sessions`, `session_members` | title, owner, members and roles | Until deleted |
-| `session_entries` | **encrypted** text, label, author `uid`, client ID, size, time | Until deleted |
+| `shared_sessions`, `session_members` | title, owner, members and roles, when each member last loaded the newest entries | Until deleted |
+| `session_entries` | **encrypted** text, kind (including brief versions), the entry it replies to, label, author `uid`, client ID, size, time | Until deleted |
 | `invitations` | hash of the link token, session, role, creator, expiry, use | 7 days, single use |
 | `web_sessions` | hash of the website session cookie, `uid`, times | 12 h idle / 7 days |
 | `reports`, `moderation_decisions` | §8 | LEGAL.md §4 |
@@ -360,7 +377,7 @@ login's "Download your data" includes it.
 | P2 / D | Terms and privacy policy on 2earl.com cover Prompt share; the imprint links the contact form | Open: 2earl/website#6 |
 | P2 / C2c | Explicit consent for sensitive data (asked once, withdrawable); owner reminded of messages open 30 minutes; reporters emailed receipt and decision when the owner turns it on (Workers Paid) | Built |
 | S1 | Sharing a private prompt with people by email (§4.1): login's `PromptshareDirectory`, `prompt_shares`, "Shared with you" on the website and through assistants; privacy policy | Built |
-| S2 | Sessions: brief with history, `since` and new-entry counts, entry kinds, replies, `update_session`, starting from a prompt (§5.1) | Proposed |
+| S2 | Sessions: brief with history, `since` and new-entry counts, entry kinds, replies, renaming, starting from a prompt (§5.1) | Built |
 | S3 | Sessions: search within a session, tasks, Markdown export (§5.1) | Proposed |
 | P3 | MCP prompts primitive through the gateway; prompt versions | |
 
