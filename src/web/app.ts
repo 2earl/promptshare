@@ -469,9 +469,15 @@ export function createApp(now: () => number) {
     briefDraft: string | null = null,
   ) {
     const id = c.req.param('id') ?? '';
+    const kindParam = c.req.query('kind');
+    const kind = (ENTRY_KINDS as readonly string[]).includes(kindParam ?? '')
+      ? (kindParam as EntryKind)
+      : undefined;
     const session = await loadSession(c.env.DB, c.env.STATE_ENCRYPTION_KEY, uid, id, {
       before: c.req.query('before'),
-      markReadAt: error ? undefined : c.get('now'),
+      kind,
+      // Filtering by kind doesn't show everything new, so it doesn't mark it seen.
+      markReadAt: error || kind ? undefined : c.get('now'),
     });
     if (!session) return notFound(c, 'session');
     const members = (await listMembers(c.env.DB, uid, id)) ?? [];
@@ -479,7 +485,7 @@ export function createApp(now: () => number) {
     return html(
       c,
       pages.sessionView(
-        { id, ...session, members, invitations },
+        { id, ...session, kind, members, invitations },
         error,
         draft,
         newLink,

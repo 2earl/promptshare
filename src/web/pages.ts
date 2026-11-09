@@ -49,6 +49,34 @@ export interface Viewer {
 
 const date = (iso: string) => iso.slice(0, 16).replace('T', ' ') + ' UTC';
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * A time as people say it ("5 minutes ago", "yesterday", "3 Nov"), with the exact UTC time on
+ * hover and for assistive technology in `datetime`. Relative to when the page is rendered.
+ */
+export function timeTag(iso: string, now = Date.now()): string {
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return esc(iso);
+  const seconds = Math.round((now - at) / 1000);
+  const minutes = Math.round(seconds / 60);
+  const hours = Math.round(seconds / 3600);
+  const day = new Date(at);
+  const today = new Date(now);
+  const sameYear = day.getUTCFullYear() === today.getUTCFullYear();
+  const startOfToday = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  let text: string;
+  if (seconds < -60)
+    text = `${String(day.getUTCDate())} ${MONTHS[day.getUTCMonth()] ?? ''} ${String(day.getUTCFullYear())}`;
+  else if (seconds < 60) text = 'just now';
+  else if (minutes < 60) text = `${String(minutes)} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+  else if (at >= startOfToday) text = `${String(hours)} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  else if (at >= startOfToday - 86_400_000) text = 'yesterday';
+  else
+    text = `${String(day.getUTCDate())} ${MONTHS[day.getUTCMonth()] ?? ''}${sameYear ? '' : ` ${String(day.getUTCFullYear())}`}`;
+  return `<time datetime="${esc(iso)}" title="${esc(date(iso))}">${text}</time>`;
+}
+
 export function layout(title: string, main: string, viewer: Viewer, current = ''): string {
   const nav = (href: string, label: string) =>
     `<a href="${href}"${current === href ? ' aria-current="page"' : ''}>${label}</a>`;
@@ -62,7 +90,7 @@ export function layout(title: string, main: string, viewer: Viewer, current = ''
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · Prompt share</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/app.css?v=2">
+<link rel="stylesheet" href="/app.css?v=3">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -114,8 +142,8 @@ ${addressSlip(address)}
 <p class="actions">${viewer.signedIn ? '<a class="button" href="/prompts">Open your prompts</a>' : '<a class="button" href="/signin">Sign in with 2earl</a>'}<a class="text-link" href="/connect">How to connect</a></p>
 </section>
 <section class="cards" aria-label="What you can do">
-<article><h2>Prompts</h2><p>Save the prompts you reuse. Ask your assistant to find one, use it, or change it. Your prompts stay private.</p></article>
-<article><h2>Shared sessions</h2><p>Save where a conversation stands — decisions, summaries, next steps — and continue from there in another chat or another assistant.</p></article>
+<article><h2>Prompts</h2><p>Save the prompts you reuse, with <code>{{blanks}}</code> to fill in each time. Pick them from your assistant’s prompt menu, or just ask for one. Every change keeps the earlier version. Private unless you publish.</p></article>
+<article><h2>Shared sessions</h2><p>Save where a conversation stands: a brief, decisions, tasks. Pick it up in another chat or another assistant with “Resume a shared session”, or with people you invite.</p></article>
 <article><h2>Your data</h2><p>Session text is encrypted. Nothing is saved unless you or your assistant save it. Download or delete everything from your 2earl account.</p></article>
 </section>`,
     viewer,
@@ -242,7 +270,7 @@ export function promptList(prompts: PromptSummary[], query: string): string {
   const rows = prompts
     .map(
       (p) => `<li><a href="/prompts/${esc(p.id)}"><span class="item-title">${esc(p.title)}</span>
-<span class="item-meta">${p.visibility === 'public' ? '<span class="tag">Public</span> ' : ''}${p.shareCount ? `<span class="tag">Shared with ${String(p.shareCount)}</span> ` : ''}${p.description ? esc(p.description) + ' · ' : ''}changed ${esc(date(p.updatedAt))}</span></a></li>`,
+<span class="item-meta">${p.visibility === 'public' ? '<span class="tag">Public</span> ' : ''}${p.shareCount ? `<span class="tag">Shared with ${String(p.shareCount)}</span> ` : ''}${p.description ? esc(p.description) + ' · ' : ''}changed ${timeTag(p.updatedAt)}</span></a></li>`,
     )
     .join('');
   return layout(
@@ -310,7 +338,7 @@ export function promptEditor(
   const heading = mode.kind === 'new' ? 'New prompt' : form.title || 'Prompt';
   const status =
     mode.kind === 'edit'
-      ? `<p class="muted">${mode.prompt.visibility === 'public' ? '<span class="tag">Public</span> Every 2earl user can see this prompt. ' : share.shares.length ? `Private: only you and the ${String(share.shares.length)} ${share.shares.length === 1 ? 'person' : 'people'} you shared it with can see it. ` : 'Private: only you can see it. '}Changed ${esc(date(mode.prompt.updatedAt))}.${versionCount ? ` <a class="text-link" href="/prompts/${esc(mode.prompt.id)}/versions">${String(versionCount)} earlier ${versionCount === 1 ? 'version' : 'versions'}</a>.` : ''}${mode.prompt.copiedFrom ? ' Copied from a public prompt.' : ''}</p>`
+      ? `<p class="muted">${mode.prompt.visibility === 'public' ? '<span class="tag">Public</span> Every 2earl user can see this prompt. ' : share.shares.length ? `Private: only you and the ${String(share.shares.length)} ${share.shares.length === 1 ? 'person' : 'people'} you shared it with can see it. ` : 'Private: only you can see it. '}Changed ${timeTag(mode.prompt.updatedAt)}.${versionCount ? ` <a class="text-link" href="/prompts/${esc(mode.prompt.id)}/versions">${String(versionCount)} earlier ${versionCount === 1 ? 'version' : 'versions'}</a>.` : ''}${mode.prompt.copiedFrom ? ' Copied from a public prompt.' : ''}</p>`
       : '';
   const after =
     mode.kind === 'edit'
@@ -373,7 +401,7 @@ export function sessionList(sessions: SessionSummary[], error: string | null): s
   const rows = sessions
     .map(
       (s) => `<li><a href="/sessions/${esc(s.id)}"><span class="item-title">${esc(s.title)}</span>
-<span class="item-meta">${s.newForYou ? `<span class="tag">${String(s.newForYou)} new</span> ` : ''}${s.role === 'owner' ? 'Yours' : s.role === 'editor' ? 'You can add to it' : 'You can read it'} · ${String(s.entries)} ${s.entries === 1 ? 'entry' : 'entries'} · ${String(s.members)} ${s.members === 1 ? 'member' : 'members'} · changed ${esc(date(s.updatedAt))}</span></a></li>`,
+<span class="item-meta">${s.newForYou ? `<span class="tag">${String(s.newForYou)} new</span> ` : ''}${s.role === 'owner' ? 'Yours' : s.role === 'editor' ? 'You can add to it' : 'You can read it'} · ${String(s.entries)} ${s.entries === 1 ? 'entry' : 'entries'} · ${String(s.members)} ${s.members === 1 ? 'member' : 'members'} · changed ${timeTag(s.updatedAt)}</span></a></li>`,
     )
     .join('');
   return layout(
@@ -399,6 +427,11 @@ export interface SessionPage {
   briefVersions: number;
   /** Entries saved after the brief; absent when paging back. */
   briefState?: { entriesSince: number } | null;
+  /** Open tasks, newest first; absent when paging back. */
+  openTasks?:
+    { id: string; title: string; assignee: string | null; assignedToYou: boolean }[] | null;
+  /** The kind the entries are filtered by, if any. */
+  kind?: EntryKind | undefined;
   entries: Entry[];
   more: boolean;
   members: Member[];
@@ -424,8 +457,8 @@ export function sessionSearch(
   const rows = result.matches
     .map(
       (e) => `<article class="entry${e.mine ? '' : ' entry-other'}">
-<header><span>${e.kind === 'brief' ? '<span class="tag">Brief</span> ' : e.kind !== 'note' ? `<span class="tag">${KIND_NAME[e.kind]}</span> ` : ''}${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : who(e.author)} · ${esc(date(e.createdAt))}</span></header>
-<pre>${esc(e.text)}</pre>
+<header><span>${e.kind === 'brief' ? '<span class="tag">Brief</span> ' : e.kind !== 'note' ? `<span class="tag">${KIND_NAME[e.kind]}</span> ` : ''}${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : who(e.author)} · ${timeTag(e.createdAt)}</span></header>
+${entryBody(e)}
 </article>`,
     )
     .join('');
@@ -462,6 +495,15 @@ export function exportParts(sessionId: string, title: string, parts: number): st
   );
 }
 
+const KIND_PLURAL: Record<EntryKind, string> = {
+  note: 'Notes',
+  decision: 'Decisions',
+  question: 'Questions',
+  task: 'Tasks',
+  summary: 'Summaries',
+  artifact: 'Artifacts',
+};
+
 const KIND_NAME: Record<EntryKind, string> = {
   note: 'Note',
   decision: 'Decision',
@@ -474,42 +516,90 @@ const KIND_NAME: Record<EntryKind, string> = {
 const reportLink = (sessionId: string, entryId: string) =>
   `<a class="text-link" href="/report?url=${encodeURIComponent(`https://promptshare.cc/sessions/${sessionId}/entries/${entryId}`)}">Report</a>`;
 
-function briefSection(session: SessionPage, briefDraft: string, canWrite: boolean): string {
+function briefSection(
+  session: SessionPage,
+  briefDraft: string,
+  canWrite: boolean,
+  editing: boolean,
+): string {
   const brief = session.brief;
-  return `<section class="members" aria-labelledby="brief-title">
-<h2 id="brief-title">Brief</h2>
-<p class="hint">Where things stand: the goal, decisions, open questions and next steps. Assistants read it first. Each change keeps the earlier version.</p>
+  const behind = session.briefState?.entriesSince ?? 0;
+  const form = `<form class="form" method="post" action="/sessions/${esc(session.id)}/brief">
+<input type="hidden" name="basedOn" value="${esc(brief?.id ?? '')}">
+<label class="visually-hidden" for="brief-text">${brief ? 'Brief' : 'Write the brief'}</label>
+<textarea id="brief-text" name="brief" rows="10" required class="mono" maxlength="${String(SESSION_LIMITS.brief)}">${esc(briefDraft)}</textarea>
+<p><button class="button" type="submit">Save brief</button></p>
+</form>`;
+  return `<section class="block" aria-labelledby="brief-title">
+<div class="block-head"><h2 id="brief-title">Brief</h2>${
+    session.briefVersions > 1
+      ? `<a class="text-link" href="/sessions/${esc(session.id)}/brief">${String(session.briefVersions - 1)} earlier ${session.briefVersions === 2 ? 'version' : 'versions'}</a>`
+      : ''
+  }</div>
 ${
   brief
-    ? `<article class="entry${brief.mine ? '' : ' entry-other'}" id="brief">
-<header><span>${brief.mine ? 'You' : who(brief.author)} · ${esc(date(brief.createdAt))}${
-        session.briefState?.entriesSince
-          ? ` · ${String(session.briefState.entriesSince)} ${session.briefState.entriesSince === 1 ? 'entry' : 'entries'} saved since`
-          : ''
-      }${session.briefVersions > 1 ? ` · <a class="text-link" href="/sessions/${esc(session.id)}/brief">${String(session.briefVersions - 1)} earlier ${session.briefVersions === 2 ? 'version' : 'versions'}</a>` : ''}</span>
+    ? `<article class="entry entry-brief${brief.mine ? '' : ' entry-other'}" id="brief">
+<header><span>${brief.mine ? 'You' : who(brief.author)} · ${timeTag(brief.createdAt)}</span>
 <span class="entry-actions">${brief.mine ? '' : reportLink(session.id, brief.id)}</span></header>
 <pre>${esc(brief.text)}</pre>
+${behind ? `<p class="brief-behind">${String(behind)} ${behind === 1 ? 'entry was' : 'entries were'} saved after this brief. If they change where things stand, update it.</p>` : ''}
 </article>`
-    : '<p class="empty">No brief yet.</p>'
+    : `<p class="empty">No brief yet. The brief says where things stand: the goal, decisions, open questions and next steps. Assistants read it first.</p>`
 }
 ${
   canWrite
-    ? `<form class="form" method="post" action="/sessions/${esc(session.id)}/brief">
-<label for="brief-text">${brief ? 'Change the brief' : 'Write the brief'}</label>
-<input type="hidden" name="basedOn" value="${esc(brief?.id ?? '')}">
-<textarea id="brief-text" name="brief" rows="6" required class="mono" maxlength="${String(SESSION_LIMITS.brief)}">${esc(briefDraft)}</textarea>
-<p><button class="button button-quiet" type="submit">Save brief</button></p>
-</form>`
+    ? brief
+      ? `<details class="fold"${editing ? ' open' : ''}><summary>Edit the brief</summary>${form}</details>`
+      : form
     : ''
 }
 </section>`;
+}
+
+/** An entry's text: prose in the body font, code and documents as written, in monospace. */
+function entryBody(e: Entry): string {
+  return e.kind === 'artifact'
+    ? `<pre>${esc(e.text)}</pre>`
+    : `<div class="entry-text">${esc(e.text)}</div>`;
+}
+
+/** Open tasks above the timeline, so nobody has to scroll to find what's left. */
+function openTasksSection(session: SessionPage, canWrite: boolean): string {
+  const tasks = session.openTasks ?? [];
+  if (!tasks.length) return '';
+  return `<section class="block" aria-labelledby="tasks-title">
+<h2 id="tasks-title">Open tasks <span class="muted">(${String(tasks.length)})</span></h2>
+<ul class="task-list">${tasks
+    .map(
+      (t) =>
+        `<li><a class="text-link" href="#entry-${esc(t.id)}">${esc(t.title || 'Task')}</a>${
+          t.assignedToYou
+            ? ' <span class="tag">for you</span>'
+            : t.assignee
+              ? ` <span class="muted">for @${esc(t.assignee)}</span>`
+              : ''
+        }${
+          canWrite
+            ? `<form method="post" action="/sessions/${esc(session.id)}/entries/${esc(t.id)}/task"><input type="hidden" name="status" value="done"><button class="link-button" type="submit">Mark done</button></form>`
+            : ''
+        }</li>`,
+    )
+    .join('')}</ul>
+</section>`;
+}
+
+/** All · Decisions · Tasks …: the kinds as links, the current one marked. */
+function kindFilter(session: SessionPage): string {
+  const link = (kind: EntryKind | undefined, label: string) =>
+    `<a href="/sessions/${esc(session.id)}${kind ? `?kind=${kind}` : ''}#entries-title"${session.kind === kind ? ' aria-current="true"' : ''}>${label}</a>`;
+  return `<nav class="chips" aria-label="Show entries of one kind">${link(undefined, 'All')}${ENTRY_KINDS.map((k) => link(k, KIND_PLURAL[k])).join('')}</nav>`;
 }
 
 export function briefHistoryPage(sessionId: string, title: string, versions: Entry[]): string {
   const rows = versions
     .map(
       (v, i) => `<article class="entry${v.mine ? '' : ' entry-other'}">
-<header><span>${i === 0 ? '<strong>Current</strong> · ' : ''}${v.mine ? 'You' : who(v.author)} · ${esc(date(v.createdAt))}</span>
+<header><span>${i === 0 ? '<strong>Current</strong> · ' : ''}${v.mine ? 'You' : who(v.author)} · ${timeTag(v.createdAt)}</span>
 <span class="entry-actions">${v.mine ? '' : reportLink(sessionId, v.id)}</span></header>
 <pre>${esc(v.text)}</pre>
 </article>`,
@@ -537,12 +627,12 @@ export function sessionView(
   const entries = session.entries
     .map(
       (e) => `<article class="entry${e.mine ? '' : ' entry-other'}" id="entry-${esc(e.id)}">
-<header><span>${e.kind !== 'note' && e.kind !== 'brief' ? `<span class="tag">${KIND_NAME[e.kind]}${e.task ? ` · ${e.task.status === 'done' ? 'done' : 'open'}` : ''}</span> ` : ''}${e.task?.assignedToYou ? 'for you · ' : e.task?.assignee ? `for @${esc(e.task.assignee)} · ` : ''}${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : who(e.author)} · ${esc(date(e.createdAt))}${e.replyTo ? ` · <a class="text-link" href="#entry-${esc(e.replyTo)}">in reply</a>` : ''}</span>
+<header><span>${e.kind !== 'note' && e.kind !== 'brief' ? `<span class="tag">${KIND_NAME[e.kind]}${e.task ? ` · ${e.task.status === 'done' ? 'done' : 'open'}` : ''}</span> ` : ''}${e.task?.assignedToYou ? 'for you · ' : e.task?.assignee ? `for @${esc(e.task.assignee)} · ` : ''}${e.label ? `<strong>${esc(e.label)}</strong> · ` : ''}${e.mine ? 'You' : who(e.author)} · ${timeTag(e.createdAt)}${e.replyTo ? ` · <a class="text-link" href="#entry-${esc(e.replyTo)}">in reply</a>` : ''}</span>
 <span class="entry-actions">${canReply && e.task ? `<form method="post" action="/sessions/${esc(session.id)}/entries/${esc(e.id)}/task"><input type="hidden" name="status" value="${e.task.status === 'done' ? 'open' : 'done'}"><button class="link-button" type="submit">${e.task.status === 'done' ? 'Reopen' : 'Mark done'}</button></form>` : ''}
 ${canReply ? `<a class="text-link" href="/sessions/${esc(session.id)}?reply=${esc(e.id)}#text">Reply</a>` : ''}
 ${e.mine ? '' : reportLink(session.id, e.id)}
 ${e.mine || session.role === 'owner' ? `<form method="post" action="/sessions/${esc(session.id)}/entries/${esc(e.id)}/delete"><button class="link-button danger" type="submit">Delete</button></form>` : ''}</span></header>
-<pre>${esc(e.text)}</pre>
+${entryBody(e)}
 </article>`,
     )
     .join('');
@@ -565,11 +655,11 @@ ${e.mine || session.role === 'owner' ? `<form method="post" action="/sessions/${
     .map(
       (
         i,
-      ) => `<li><span>Link for someone who ${i.role === 'editor' ? 'can add entries' : 'can read'} · valid until ${esc(date(i.expiresAt))}</span>
+      ) => `<li><span>Link for someone who ${i.role === 'editor' ? 'can add entries' : 'can read'} · valid until ${timeTag(i.expiresAt)}</span>
 <form method="post" action="/sessions/${esc(session.id)}/invitations/${esc(i.id)}/revoke"><button class="link-button danger" type="submit">Revoke</button></form></li>`,
     )
     .join('');
-  const sharing = `<section class="members" aria-labelledby="members-title">
+  const sharing = `<section class="block members" aria-labelledby="members-title">
 <h2 id="members-title">People</h2>
 <ul class="people">${members}</ul>
 ${
@@ -583,23 +673,22 @@ ${invitations ? `<ul class="people">${invitations}</ul>` : ''}`
     : `<form method="post" action="/sessions/${esc(session.id)}/leave"><button class="button button-quiet" type="submit">Leave session</button></form>`
 }
 </section>`;
-  return layout(
-    session.title,
-    `<p class="crumb"><a href="/sessions">Shared sessions</a></p>
-<h1>${esc(session.title)}</h1>
-${error ? `<p class="alert" role="alert">${esc(error)}</p>` : ''}
-${briefSection(session, briefDraft, canWrite)}
-${
-  canWrite
-    ? `<form class="form" method="post" action="/sessions/${esc(session.id)}/entries">
+  const composer = canWrite
+    ? `<form class="form composer" method="post" action="/sessions/${esc(session.id)}/entries">
 <label for="text">${draft.replyTo ? 'Reply' : 'Add an entry'}</label>
 ${draft.replyTo ? `<p class="muted">Replying to <a class="text-link" href="#entry-${esc(draft.replyTo)}">this entry</a>. <a class="text-link" href="/sessions/${esc(session.id)}">Cancel</a></p><input type="hidden" name="replyTo" value="${esc(draft.replyTo)}">` : ''}
-<textarea id="text" name="text" rows="6" required class="mono">${esc(draft.text)}</textarea>
-<label for="kind">Kind</label>
+<textarea id="text" name="text" rows="3" required placeholder="A note, decision, question or task">${esc(draft.text)}</textarea>
+<div class="composer-row">
+<label class="visually-hidden" for="kind">Kind</label>
 <select id="kind" name="kind">${ENTRY_KINDS.map((k) => `<option value="${k}"${draft.kind === k ? ' selected' : ''}>${KIND_NAME[k]}</option>`).join('')}</select>
+<button class="button" type="submit">${draft.replyTo ? 'Reply' : 'Add entry'}</button>
+</div>
+<details class="fold"${draft.label || draft.assignee ? ' open' : ''}><summary>Label${session.members.some((m) => m.handle) ? ' and assignee' : ''}</summary>
+<label for="label">Label <span class="optional">a short name, shown in bold</span></label>
+<input id="label" name="label" maxlength="${String(SESSION_LIMITS.label)}" value="${esc(draft.label)}">
 ${
   session.members.some((m) => m.handle)
-    ? `<label for="assignee">Assign to <span class="optional">for a task, optional</span></label>
+    ? `<label for="assignee">Assign to <span class="optional">for a task</span></label>
 <select id="assignee" name="assignee"><option value="">Nobody</option>${session.members
         .filter((m) => m.handle)
         .map(
@@ -609,29 +698,41 @@ ${
         .join('')}</select>`
     : ''
 }
-<label for="label">Label <span class="optional">optional</span></label>
-<input id="label" name="label" maxlength="${String(SESSION_LIMITS.label)}" value="${esc(draft.label)}">
-<p><button class="button" type="submit">Add entry</button></p>
+</details>
 </form>`
-    : ''
-}
-<div class="actions">
+    : '';
+  return layout(
+    session.title,
+    `<p class="crumb"><a href="/sessions">Shared sessions</a></p>
+<h1>${esc(session.title)}</h1>
+<p class="muted">${owner ? 'Yours' : session.role === 'editor' ? 'You can add to it' : 'You can read it'} · ${String(session.members.length)} ${session.members.length === 1 ? 'member' : 'members'} · <a class="text-link" href="#members-title">People${owner ? ' and settings' : ''}</a></p>
+${error ? `<p class="alert" role="alert">${esc(error)}</p>` : ''}
+${briefSection(session, briefDraft, canWrite, Boolean(error) && briefDraft !== (session.brief?.text ?? ''))}
+${openTasksSection(session, canWrite)}
+<section class="block" aria-labelledby="entries-title">
+<div class="block-head"><h2 id="entries-title">Entries</h2><a class="text-link" href="/sessions/${esc(session.id)}/export">Download as Markdown</a></div>
+${composer}
+<div class="toolbar">
+${kindFilter(session)}
 <form class="search" method="get" action="/sessions/${esc(session.id)}/search" role="search">
-<label for="session-q">Search this session</label>
-<div class="search-row"><input id="session-q" name="q" type="search" required maxlength="200"><button class="button button-quiet" type="submit">Search</button></div>
+<label class="visually-hidden" for="session-q">Search this session</label>
+<div class="search-row"><input id="session-q" name="q" type="search" required maxlength="200" placeholder="Search this session"><button class="button button-quiet" type="submit">Search</button></div>
 </form>
-<a class="text-link" href="/sessions/${esc(session.id)}/export">Download as Markdown</a>
 </div>
-${entries || '<p class="empty">No entries yet. Ask your assistant to save where your conversation stands, or add one above.</p>'}
-${session.more && last ? `<p><a href="/sessions/${esc(session.id)}?before=${esc(last.id)}">Older entries</a></p>` : ''}
+${entries || (session.kind ? `<p class="empty">No ${KIND_PLURAL[session.kind].toLowerCase()} yet. <a class="text-link" href="/sessions/${esc(session.id)}">Show all entries</a></p>` : '<p class="empty">No entries yet. Ask your assistant to save where your conversation stands, or add one above.</p>')}
+${session.more && last ? `<p><a href="/sessions/${esc(session.id)}?before=${esc(last.id)}${session.kind ? `&kind=${session.kind}` : ''}">Older entries</a></p>` : ''}
+</section>
 ${sharing}
 ${
   owner
-    ? `<form class="inline-form" method="post" action="/sessions/${esc(session.id)}/rename">
+    ? `<section class="block" aria-labelledby="settings-title">
+<h2 id="settings-title" class="visually-hidden">Settings</h2>
+<form class="inline-form" method="post" action="/sessions/${esc(session.id)}/rename">
 <label for="rename">Rename</label>
 <div class="search-row"><input id="rename" name="title" required maxlength="${String(SESSION_LIMITS.title)}" value="${esc(session.title)}"><button class="button button-quiet" type="submit">Rename</button></div>
 </form>
-<div class="danger-zone"><a class="text-link danger" href="/sessions/${esc(session.id)}/delete">Delete session</a></div>`
+<div class="danger-zone"><a class="text-link danger" href="/sessions/${esc(session.id)}/delete">Delete session</a></div>
+</section>`
     : ''
 }`,
     { signedIn: true },
@@ -708,7 +809,7 @@ export function sharedList(prompts: PromptSummary[], query: string): string {
   const rows = prompts
     .map(
       (p) => `<li><a href="/p/${esc(p.id)}"><span class="item-title">${esc(p.title)}</span>
-<span class="item-meta">${p.author ? `from @${esc(p.author)}` : ''}${p.description ? ' · ' + esc(p.description) : ''} · changed ${esc(date(p.updatedAt))}</span></a></li>`,
+<span class="item-meta">${p.author ? `from @${esc(p.author)}` : ''}${p.description ? ' · ' + esc(p.description) : ''} · changed ${timeTag(p.updatedAt)}</span></a></li>`,
     )
     .join('');
   return layout(
@@ -741,8 +842,8 @@ export function promptVersionsPage(prompt: Prompt, versions: PromptVersion[]): s
         v.models.join(',') !== prompt.models.join(',') ? 'different models' : '',
       ].filter(Boolean);
       return `<li class="version">
-<h2>Saved ${esc(date(v.savedAt))}</h2>
-<p class="muted">Replaced ${esc(date(v.replacedAt))}${meta.length ? `. Also has ${meta.join(', ')}` : ''}.</p>
+<h2>Saved ${timeTag(v.savedAt)}</h2>
+<p class="muted">Replaced ${timeTag(v.replacedAt)}${meta.length ? `. Also has ${meta.join(', ')}` : ''}.</p>
 ${changes.length ? `<p>Restoring it changes the text like this:</p><pre class="prompt-body diff">${esc(changes.join('\n'))}</pre>` : v.body === prompt.body ? '<p>The text is the same as now.</p>' : '<p>The text is too long to compare line by line.</p>'}
 <details><summary>Show the whole text</summary><pre class="prompt-body">${esc(v.body)}</pre></details>
 <form method="post" action="/prompts/${esc(prompt.id)}/versions/${esc(v.id)}/restore"><button class="button button-quiet" type="submit">Restore this version</button></form>
@@ -779,7 +880,7 @@ export function publicPrompt(prompt: Prompt, origin: string): string {
     prompt.title,
     `<p class="crumb">${shared ? '<a href="/shared">Shared with you</a>' : '<a href="/explore">Public prompts</a>'}</p>
 <h1>${esc(prompt.title)}</h1>
-<p class="muted">${shared ? `Shared with you by ${by}` : prompt.author ? `By @${esc(prompt.author)}` : 'By a 2earl user'}${prompt.models.length ? ` · for ${esc(prompt.models.join(', '))}` : ''} · changed ${esc(date(prompt.updatedAt))}</p>
+<p class="muted">${shared ? `Shared with you by ${by}` : prompt.author ? `By @${esc(prompt.author)}` : 'By a 2earl user'}${prompt.models.length ? ` · for ${esc(prompt.models.join(', '))}` : ''} · changed ${timeTag(prompt.updatedAt)}</p>
 ${prompt.description ? `<p>${esc(prompt.description)}</p>` : ''}
 <pre class="prompt-body">${esc(prompt.body)}</pre>
 ${prompt.variables.length ? `<p class="muted">${variablesLine(prompt.variables)}</p>` : ''}
@@ -965,8 +1066,8 @@ export function adminList(
     'Moderation',
     `<h1>Moderation</h1>
 <p class="lede">Reports, contests and messages, ${open ? 'oldest first. Reports need a decision without undue delay' : 'most recent first'}.</p>
-<p class="actions">${open ? '<a class="text-link" href="/admin?closed=1">Closed</a>' : '<a class="text-link" href="/admin">Open</a>'}</p>
-${messages.length ? `<ul class="list">${rows}</ul>` : `<p class="empty">${open ? 'Nothing open.' : 'Nothing closed yet.'}</p>`}
+<nav class="chips" aria-label="Which messages"><a href="/admin"${open ? ' aria-current="true"' : ''}>Open</a><a href="/admin?closed=1"${open ? '' : ' aria-current="true"'}>Closed</a></nav>
+${messages.length ? `<ul class="list">${rows}</ul>` : `<p class="empty">${open ? 'Nothing to review. New reports, contests and contact messages appear here.' : 'Nothing closed yet.'}</p>`}
 <section class="members" aria-labelledby="settings-title">
 <h2 id="settings-title">Settings</h2>
 <form class="form" method="post" action="/admin/settings">
