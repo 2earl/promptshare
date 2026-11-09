@@ -8,6 +8,9 @@ import {
   copyPrompt,
   deletePrompt,
   fillPrompt,
+  getPromptVersion,
+  listPromptVersions,
+  restorePromptVersion,
   getPrompt,
   savePrompt,
   searchPrompts,
@@ -178,26 +181,103 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Get a prompt',
       description:
-        'Gets one prompt with its full text. A prompt written by another 2earl user (public, or shared with you) comes marked as theirs. `variables` lists its placeholders, written `{{name}}` or `{{name=default}}`. To use the prompt, pass `fill` with a value for each: from what the user already said, or ask them. Variables without a value keep their default; `unfilled` names the ones still open. Values are used for this answer only and not stored.',
+        'Gets one prompt with its full text. A prompt written by another 2earl user (public, or shared with you) comes marked as theirs. `variables` lists its placeholders, written `{{name}}` or `{{name=default}}`. To use the prompt, pass `fill` with a value for each: from what the user already said, or ask them. Variables without a value keep their default; `unfilled` names the ones still open. Values are used for this answer only and not stored. For one of the user’s own prompts, `version` (from list_prompt_versions) gets an earlier version instead.',
       inputSchema: z.object({
         id,
         fill: z
           .record(z.string().max(40), z.string().max(8 * 1024))
           .optional()
           .describe('Values for the prompt’s variables, by name.'),
+        version: z
+          .string()
+          .max(64)
+          .optional()
+          .describe('An earlier version of one of your prompts, from list_prompt_versions.'),
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     guarded(
       SCOPES.read,
-      async ({ id, fill }: { id: string; fill?: Record<string, string> | undefined }) => {
+      async ({
+        id,
+        fill,
+        version,
+      }: {
+        id: string;
+        fill?: Record<string, string> | undefined;
+        version?: string | undefined;
+      }) => {
         const prompt = await getPrompt(db, caller.uid, id);
         if (!prompt) return fail('No prompt with that ID that you can see.');
-        if (!fill) return promptResult(prompt);
-        const filled = fillPrompt(prompt.body, fill);
-        return promptResult({ ...prompt, body: filled.body }, filled);
+        let shown: Prompt = prompt;
+        let earlier: { version: string; savedAt: string; replacedAt: string } | null = null;
+        if (version) {
+          const old = prompt.mine ? await getPromptVersion(db, caller.uid, id, version) : null;
+          if (!old) return fail('No earlier version with that ID of a prompt of yours.');
+          shown = {
+            ...prompt,
+            title: old.title,
+            description: old.description,
+            body: old.body,
+            tags: old.tags,
+            models: old.models,
+            variables: old.variables,
+          };
+          earlier = { version: old.id, savedAt: old.savedAt, replacedAt: old.replacedAt };
+        }
+        const result = fill
+          ? (() => {
+              const filled = fillPrompt(shown.body, fill);
+              return promptResult({ ...shown, body: filled.body }, filled);
+            })()
+          : promptResult(shown);
+        if (!earlier) return result;
+        const [meta, ...rest] = result.content;
+        const info = { ...(JSON.parse(meta?.text ?? '{}') as object), earlierVersion: earlier };
+        return { content: [{ type: 'text', text: JSON.stringify(info, null, 2) }, ...rest] };
       },
     ),
+  );
+
+  server.registerTool(
+    'list_prompt_versions',
+    {
+      title: 'List earlier versions of a prompt',
+      description:
+        'Lists the earlier versions of one of the user’s prompts, newest first: kept each time its content changed, the newest 10. Use get_prompt with `version` to read one, and restore_prompt_version to go back to it.',
+      inputSchema: z.object({ id }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    guarded(SCOPES.read, async ({ id }: { id: string }) => {
+      const versions = await listPromptVersions(db, caller.uid, id);
+      if (!versions) return fail('No prompt of yours with that ID.');
+      return json(versions);
+    }),
+  );
+
+  server.registerTool(
+    'restore_prompt_version',
+    {
+      title: 'Restore an earlier version of a prompt',
+      description:
+        'Makes an earlier version of one of the user’s prompts its current content. What it replaces is kept as a version, so this can be undone. If the prompt is public, the change is visible to everyone at once.',
+      inputSchema: z.object({
+        id,
+        version: z.string().max(64).describe('The version’s ID, from list_prompt_versions.'),
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    guarded(SCOPES.write, async ({ id, version }: { id: string; version: string }) => {
+      const prompt = await restorePromptVersion(db, caller.uid, now(), id, version);
+      if (!prompt) return fail('No earlier version with that ID of a prompt of yours.');
+      await log('prompt.restored', { prompt: id, version });
+      return promptResult(prompt);
+    }),
   );
 
   const fields = {
@@ -247,7 +327,7 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'Change a prompt',
       description:
-        'Changes the given fields of one of the user’s prompts. If the prompt is public, the change is visible to everyone at once.',
+        'Changes the given fields of one of the user’s prompts. The content it replaces is kept as an earlier version (list_prompt_versions). If the prompt is public, the change is visible to everyone at once.',
       inputSchema: z.object({
         id,
         title: fields.title.optional(),

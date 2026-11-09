@@ -4,7 +4,7 @@ import { SCOPES } from '../src/caller';
 import { credentialIn } from '../src/credentials';
 import { fillPrompt, ftsQuery, variablesOf } from '../src/prompts';
 import { diffLines, removeMember } from '../src/sessions';
-import { deleteUserData } from '../src/account';
+import { deleteUserData, exportUserData } from '../src/account';
 import {
   ALL,
   addMember,
@@ -58,9 +58,11 @@ describe('entry points', () => {
       'delete_session',
       'delete_session_entry',
       'get_prompt',
+      'list_prompt_versions',
       'list_sessions',
       'load_session',
       'rename_session',
+      'restore_prompt_version',
       'save_prompt',
       'save_to_session',
       'search_prompts',
@@ -71,7 +73,7 @@ describe('entry points', () => {
       'update_task',
     ]);
     // Read-only tools need `read` at the gateway; session tools name `state` themselves.
-    for (const name of ['search_prompts', 'get_prompt']) {
+    for (const name of ['search_prompts', 'get_prompt', 'list_prompt_versions']) {
       expect(byName.get(name)?.annotations?.readOnlyHint).toBe(true);
       expect(byName.get(name)?._meta).toBeUndefined();
     }
@@ -898,5 +900,82 @@ describe('prompt variables and resuming a session (phase P4)', () => {
     expect(resumed).toContain('Goal: ship');
     expect(resumed).toContain('new one');
     expect(resumed).not.toContain('old one');
+  });
+});
+
+describe('earlier versions of a prompt (phase P5)', () => {
+  interface Version {
+    id: string;
+    title: string;
+    length: number;
+  }
+  const versions = async (client: Awaited<ReturnType<typeof connect>>, id: string) =>
+    parsed<Version[]>((await tool(client, 'list_prompt_versions', { id })).texts);
+
+  it('keeps what a change replaced, newest first, and only when the content changed', async () => {
+    const client = await connect('user-1');
+    const { id } = await save('user-1', 'Notes', 'v1');
+    await tool(client, 'update_prompt', { id, body: 'v2' });
+    await tool(client, 'update_prompt', { id, title: 'Notes', body: 'v2' }); // no change
+    await tool(client, 'update_prompt', { id, body: 'v3', title: 'Release notes' });
+    const list = await versions(client, id);
+    expect(list.map((v) => [v.title, v.length])).toEqual([
+      ['Notes', 2],
+      ['Notes', 2],
+    ]);
+    const old = await tool(client, 'get_prompt', { id, version: list[1]?.id });
+    expect(old.texts[1]).toBe('v1');
+    expect(parsed<{ earlierVersion: { version: string } }>(old.texts).earlierVersion.version).toBe(
+      list[1]?.id,
+    );
+    expect((await tool(client, 'get_prompt', { id })).texts[1]).toBe('v3');
+  });
+
+  it('restores a version and keeps what it replaced, so restoring can be undone', async () => {
+    const client = await connect('user-1');
+    const { id } = await save('user-1', 'Notes', 'v1 {{x}}');
+    await tool(client, 'update_prompt', { id, body: 'v2' });
+    const [first] = await versions(client, id);
+    const restored = await tool(client, 'restore_prompt_version', { id, version: first?.id });
+    expect(restored.texts[1]).toBe('v1 {{x}}');
+    expect(parsed<{ variables: unknown[] }>(restored.texts).variables).toEqual([{ name: 'x' }]);
+    const after = await versions(client, id);
+    expect(after).toHaveLength(2);
+    const undo = await tool(client, 'get_prompt', { id, version: after[0]?.id });
+    expect(undo.texts[1]).toBe('v2');
+  });
+
+  it('keeps the newest 10', async () => {
+    const client = await connect('user-1');
+    const { id } = await save('user-1', 'Many', 'v0');
+    for (let i = 1; i <= 12; i++)
+      await tool(client, 'update_prompt', { id, body: `v${String(i)}` });
+    expect(await count('prompt_versions', 'prompt_id = ?', id)).toBe(10);
+    const oldest = (await versions(client, id)).at(-1);
+    expect((await tool(client, 'get_prompt', { id, version: oldest?.id })).texts[1]).toBe('v2');
+  });
+
+  it('versions are the owner’s only, and go with the prompt and the account', async () => {
+    const owner = await connect('user-1');
+    const { id } = await save('user-1', 'Mine', 'v1');
+    await tool(owner, 'update_prompt', { id, body: 'v2' });
+    const [version] = await versions(owner, id);
+    await env.DB.prepare("UPDATE prompts SET visibility = 'public' WHERE id = ?").bind(id).run();
+    const other = await connect('user-2');
+    expect((await tool(other, 'list_prompt_versions', { id })).error).toBe(true);
+    expect((await tool(other, 'get_prompt', { id, version: version?.id })).error).toBe(true);
+    expect((await tool(other, 'restore_prompt_version', { id, version: version?.id })).error).toBe(
+      true,
+    );
+
+    const exported = await exportUserData(env.DB, env.STATE_ENCRYPTION_KEY, 'user-1');
+    expect(exported.promptVersions).toEqual([expect.objectContaining({ prompt: id, body: 'v1' })]);
+    await tool(owner, 'delete_prompt', { id });
+    expect(await count('prompt_versions', 'prompt_id = ?', id)).toBe(0);
+
+    const { id: second } = await save('user-1', 'Second', 'a');
+    await tool(owner, 'update_prompt', { id: second, body: 'b' });
+    await deleteUserData(env.DB, 'user-1', 1);
+    expect(await count('prompt_versions', 'owner_uid = ?', 'user-1')).toBe(0);
   });
 });

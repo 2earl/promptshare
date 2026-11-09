@@ -1396,3 +1396,28 @@ describe('sessions on the website (phase S3)', () => {
     expect(await second.text()).toContain('part 2 of 2');
   });
 });
+
+describe('earlier versions on the website', () => {
+  it('links to earlier versions, shows what restoring changes, and restores', async () => {
+    const { cookie } = await signIn('user-1');
+    const path =
+      (await post('/prompts', { title: 'Notes', body: 'line one\nline two' }, cookie)).headers.get(
+        'Location',
+      ) ?? '';
+    expect(await (await get(path, cookie)).text()).not.toContain('earlier version');
+    await post(path, { title: 'Notes', body: 'line one\nline 2' }, cookie);
+    const editor = await (await get(path, cookie)).text();
+    expect(editor).toContain(`<a class="text-link" href="${path}/versions">1 earlier version</a>`);
+
+    const page = await (await get(`${path}/versions`, cookie)).text();
+    expect(page).toContain('- line 2\n+ line two');
+    const restore = /action="(\/prompts\/[^"]+\/restore)"/.exec(page)?.[1] ?? '';
+    expect((await post(restore, {}, cookie)).headers.get('Location')).toBe(path);
+    expect(await (await get(path, cookie)).text()).toContain('2 earlier versions');
+
+    // Someone else gets nothing.
+    const other = await signIn('user-2');
+    expect((await get(`${path}/versions`, other.cookie)).status).toBe(404);
+    expect((await post(restore, {}, other.cookie)).status).toBe(404);
+  });
+});
