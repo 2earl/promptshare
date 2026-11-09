@@ -10,6 +10,7 @@ export type AuditEvent =
   | 'prompt.unshared'
   | 'session.created'
   | 'session.entry_added'
+  | 'session.brief_updated'
   | 'session.entry_refused'
   | 'user.deleted';
 
