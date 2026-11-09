@@ -625,14 +625,19 @@ ${messages.length ? `<ul class="list">${rows}</ul>` : `<p class="empty">${open ?
 <h2 id="settings-title">Settings</h2>
 <form class="form" method="post" action="/admin/settings">
 <label class="choice"><input type="checkbox" name="emailReporters" value="on"${settings.emailReporters ? ' checked' : ''}> Email reporters a confirmation of receipt and the decision, from noreply@promptshare.cc</label>
-<p class="hint">Needs the Cloudflare Workers Paid plan and promptshare.cc onboarded in Email Service → Email Sending. Off: you send the decision yourself from the report’s page.</p>
+<p class="hint">Before turning this on: enable the Cloudflare Workers Paid plan and onboard promptshare.cc in Email Service → Email Sending. Off: you send the decision yourself from the report’s page.</p>
 <p><button class="button button-quiet" type="submit">Save settings</button></p>
 </form>
-<form class="inline-form" method="post" action="/admin/settings/test">
+${
+  settings.emailReporters
+    ? `<form class="inline-form" method="post" action="/admin/settings/test">
 <label for="testTo">Send a test email</label>
 <div class="search-row"><input id="testTo" name="to" type="email" required placeholder="an address that isn’t yours, to test sending to anyone"><button class="button button-quiet" type="submit">Send test</button></div>
 </form>
 ${settings.testResult ? `<p class="${settings.testResult.startsWith('Sent') ? 'muted' : 'alert'}" role="status">${esc(settings.testResult)}</p>` : ''}
+<p class="hint">If sending fails, reporters still see their confirmation on the page, and each report’s page offers the decision email for you to send, as when this is off.</p>`
+    : ''
+}
 </section>`,
     { signedIn: true },
   );

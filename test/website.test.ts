@@ -917,20 +917,50 @@ describe('emailing reporters (switch on the moderation page)', () => {
       /name="emailReporters" value="on" checked/,
     );
 
+    // The local binding may or may not deliver; the page claims an email only when one was sent.
     const page = await (await post('/report', report)).text();
-    expect(page).toContain('We also emailed you this confirmation.');
+    const sent = await count('messages', 'receipt_sent_at IS NOT NULL');
+    expect(page.includes('We also emailed you this confirmation.')).toBe(sent === 1);
 
     await post('/admin/settings', {}, owner);
     expect(await count('settings', "key = 'email_reporters' AND value = 'off'")).toBe(1);
   });
 
-  it('shows the owner whether the paid sending path works', async () => {
+  it('offers the test email only while automatic emails are on', async () => {
     const owner = await ownerCookie();
+    expect(await (await get('/admin', owner)).text()).not.toContain('/admin/settings/test');
+    expect((await post('/admin/settings/test', { to: 'someone@example.com' }, owner)).status).toBe(
+      404,
+    );
+
+    await post('/admin/settings', { emailReporters: 'on' }, owner);
+    expect(await (await get('/admin', owner)).text()).toContain('/admin/settings/test');
     const result = await (
       await post('/admin/settings/test', { to: 'someone@example.com' }, owner)
     ).text();
     // In tests the binding is local: either outcome is reported, never an error page.
     expect(result).toMatch(/Sent to someone@example\.com|Not sent \(/);
+  });
+
+  it('doesn’t tell a reporter it emailed them when sending failed', async () => {
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('email_reporters', 'on', 1)",
+    ).run();
+    const failing = Object.create(env) as Env;
+    Object.defineProperty(failing, 'MAILER', {
+      value: {
+        send: () =>
+          Promise.reject(Object.assign(new Error('x'), { code: 'E_SENDER_DOMAIN_NOT_CONFIGURED' })),
+      },
+    });
+    const id = 'f';
+    await env.DB.prepare(
+      "INSERT INTO messages (id, kind, email, body, created_at) VALUES ('f', 'report', 'r@example.com', 'b', 1)",
+    ).run();
+    expect(
+      await sendReceipt(failing, 2, id, { name: '', email: 'r@example.com', contentUrl: 'u' }),
+    ).toBe(false);
+    expect(await count('messages', "id = 'f' AND receipt_sent_at IS NULL")).toBe(1);
   });
 });
 
