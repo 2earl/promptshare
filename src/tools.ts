@@ -315,7 +315,7 @@ export function buildServer(env: Env, caller: Caller, now: () => number): McpSer
     {
       title: 'List shared sessions',
       description:
-        'Lists the shared sessions the user owns or belongs to: saved conversation state to continue in another session, another assistant, or with invited people.',
+        'Lists the shared sessions the user owns or belongs to, with how many entries other members added since the user last loaded each. A session holds a brief and entries (notes, decisions, questions, tasks) that the user or invited members chose to save.',
       annotations: { readOnlyHint: true, openWorldHint: false },
       _meta: STATE_META,
     },

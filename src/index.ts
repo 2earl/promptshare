@@ -19,7 +19,9 @@ import { createApp } from './web/app';
 const now = () => Math.floor(Date.now() / 1000);
 
 /** wrangler.jsonc: every 10 minutes, the reminder; otherwise the daily clean-up. */
-export const REMINDER_CRON = '*/10 * * * *';
+// Not exported: workerd accepts only handlers and entrypoints as exports of the main module
+// (wrangler dev refuses to start otherwise).
+const REMINDER_CRON = '*/10 * * * *';
 
 /** MCP over a Service Binding from the gateway (2earl/mcp docs/UPSTREAM_CONTRACT.md). */
 export class GatewayMcp extends WorkerEntrypoint<Env> {

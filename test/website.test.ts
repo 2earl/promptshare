@@ -6,6 +6,7 @@ import { safeReturnTo } from '../src/web/http';
 import { getMessage, moderationCleanup } from '../src/moderation';
 import { remindOwner, sendDecision, sendReceipt } from '../src/notices';
 import { mimeMessage, notifyOwner } from '../src/web/messages';
+import { TOOL_DOCS } from '../src/web/pages';
 import { shareCleanup, sharePrompt } from '../src/shares';
 import { addMember, connect, count, parsed, publicPrompt, resetDatabase, tool } from './helpers';
 
@@ -72,6 +73,17 @@ async function signIn(uid = 'user-1', returnTo = '/prompts') {
 }
 
 describe('pages and headers', () => {
+  it('documents every tool on the connect page, with examples and help', async () => {
+    const page = await (await get('/connect')).text();
+    const { tools } = await (await connect('user-1')).listTools();
+    for (const t of tools) expect(page).toContain(`<code>${t.name}</code>`);
+    expect(TOOL_DOCS.flatMap((g) => g.tools.map(([n]) => n)).sort()).toEqual(
+      tools.map((t) => t.name).sort(),
+    );
+    expect(page).toContain('Examples');
+    expect(page).toContain('If something doesn’t work');
+  });
+
   it('serves the start page with strict security headers and no scripts', async () => {
     const response = await get('/');
     expect(response.status).toBe(200);
