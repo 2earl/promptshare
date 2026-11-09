@@ -115,35 +115,92 @@ ${addressSlip(address)}
   );
 }
 
+/** The tools and what each needs (documentation; a test checks every tool is listed). */
+export const TOOL_DOCS: { permission: string; tools: [string, string][] }[] = [
+  {
+    permission: 'Read your prompts, prompts shared with you, and public prompts',
+    tools: [
+      ['search_prompts', 'Search by words; or list the newest'],
+      ['get_prompt', 'One prompt with its text'],
+    ],
+  },
+  {
+    permission: 'Create, change and delete your prompts',
+    tools: [
+      ['save_prompt', 'Save a new private prompt'],
+      ['update_prompt', 'Change one of yours'],
+      ['copy_prompt', 'Copy a public or shared prompt into yours'],
+      ['unpublish_prompt', 'Make your public prompt private'],
+      ['delete_prompt', 'Delete one of yours'],
+    ],
+  },
+  {
+    permission: 'Save to and read your shared sessions',
+    tools: [
+      ['list_sessions', 'Your sessions, with what’s new'],
+      ['create_session', 'A new session, optionally starting from one of your prompts'],
+      ['load_session', 'The brief, then entries; only new ones, or one kind'],
+      ['save_to_session', 'Add a note, decision, question, task, summary or artifact'],
+      ['update_session_brief', 'Replace the brief; earlier versions stay'],
+      ['update_task', 'Mark a task done, or assign it'],
+      ['search_session', 'Find entries in one session'],
+      ['rename_session', 'Rename a session you own'],
+      ['delete_session_entry', 'Delete an entry you wrote'],
+      ['delete_session', 'Delete a session you own'],
+    ],
+  },
+];
+
 export function connect(address: string, viewer: Viewer): string {
+  const rows = TOOL_DOCS.map(
+    (group) =>
+      `<tr><th scope="rowgroup" colspan="2">${esc(group.permission)}</th></tr>${group.tools
+        .map(([name, does]) => `<tr><td><code>${esc(name)}</code></td><td>${esc(does)}</td></tr>`)
+        .join('')}`,
+  ).join('');
   return layout(
     'How to connect',
     `<h1>How to connect</h1>
+<p class="lede">Prompt share keeps the prompts you reuse and the notes you want to keep, so you can use them from any assistant, and share them with people you choose. It stores only what you or your assistant save; it never reads your chat history.</p>
 ${addressSlip(address)}
 <ol class="steps">
-<li><h2>Add the address</h2><p>In your assistant, add a custom connector (or "MCP server") with the address above. In Claude, that is a custom connector.</p></li>
-<li><h2>Sign in with 2earl</h2><p>Your assistant opens login.2earl.com. Sign in and choose what it may do. You can change this later by connecting again.</p></li>
-<li><h2>Ask for what you need</h2><p>"Save this as a prompt called Code review." "Find my prompt for meeting notes." "Save where we are to my session Trip planning."</p></li>
+<li><h2>Add the address</h2><p>In your assistant, add a custom connector (or "MCP server") with the address above. In Claude: Settings → Connectors → Add custom connector.</p></li>
+<li><h2>Sign in with 2earl</h2><p>Your assistant opens login.2earl.com. Sign in with Google and tick what it may do. You can change this later by connecting again.</p></li>
+<li><h2>Ask for what you need</h2><p>See the examples below.</p></li>
 </ol>
-<h2>What your assistant can be allowed to do</h2>
+<h2>Examples</h2>
+<ul class="plain">
+<li><strong>“Save this as a prompt called Code review, tagged review.”</strong> Your assistant saves the text as a private prompt. Later, in any assistant: “Use my Code review prompt on this diff.”</li>
+<li><strong>“Find public prompts for meeting notes and copy the best one to my prompts.”</strong> It searches, shows you what it found, and copies the one you pick.</li>
+<li><strong>“Create a session called Trip planning and write a brief: Lisbon, 3–7 May, budget 1,500 €.”</strong> Later, in another chat or assistant: “Load my Trip planning session. What’s still open?”</li>
+<li><strong>“Add a task to Trip planning for @bo: book the hotel.”</strong> After you invited someone on this site, they see it in their assistant and can mark it done.</li>
+<li><strong>“What did we decide about flights in Trip planning?”</strong> It searches that session’s entries.</li>
+</ul>
+<h2>Tools</h2>
+<p>What your assistant can be allowed to do, by permission. Claude asks you before every tool that changes something.</p>
 <table class="table">
-<thead><tr><th scope="col">Permission</th><th scope="col">Tools</th></tr></thead>
-<tbody>
-<tr><td>Read your prompts and public prompts</td><td><code>search_prompts</code>, <code>get_prompt</code></td></tr>
-<tr><td>Create, change and delete your prompts</td><td><code>save_prompt</code>, <code>update_prompt</code>, <code>copy_prompt</code>, <code>unpublish_prompt</code>, <code>delete_prompt</code></td></tr>
-<tr><td>Save to and read your shared sessions</td><td><code>list_sessions</code>, <code>create_session</code>, <code>load_session</code>, <code>save_to_session</code>, <code>delete_session_entry</code>, <code>delete_session</code></td></tr>
-</tbody>
+<thead><tr><th scope="col">Tool</th><th scope="col">Does</th></tr></thead>
+<tbody>${rows}</tbody>
 </table>
-<p>Assistants ask you before every tool that changes something. Making a prompt public and inviting people are only possible here on the website, never through an assistant.</p>
+<p>Making a prompt public, sharing it with someone, and inviting people to a session are only possible here on the website, never through an assistant: text an assistant reads can’t make it share your things.</p>
 <h2>What is stored</h2>
 <ul class="plain">
 <li>Your prompts, as you or your assistant saved them.</li>
-<li>Session entries: only text you or your assistant chose to save, encrypted, with who wrote it and when. Prompt share never records your conversations on its own.</li>
+<li>Session briefs and entries: only text you, your assistant or a member you invited chose to save, encrypted, with who wrote it and when. Prompt share never records your conversations on its own.</li>
 <li>A security log of actions (never their text), kept for 90 days.</li>
 </ul>
 <p>Download or delete everything from your <a href="https://login.2earl.com/account">2earl account</a>. Details: <a href="https://2earl.com/privacy">privacy policy</a>.</p>
 <h2>Limits</h2>
-<p>Prompts up to ${String(PROMPT_LIMITS.body / 1024)} KB, ${PROMPT_LIMITS.perUser.toLocaleString('en')} per account. Session entries up to ${String(SESSION_LIMITS.entry / 1024)} KB, ${String(SESSION_LIMITS.perSession / 1024 / 1024)} MB per session, ${String(SESSION_LIMITS.ownedPerUser)} sessions per account.</p>`,
+<p>Prompts up to ${String(PROMPT_LIMITS.body / 1024)} KB, ${PROMPT_LIMITS.perUser.toLocaleString('en')} per account. Session entries up to ${String(SESSION_LIMITS.entry / 1024)} KB, briefs up to ${String(SESSION_LIMITS.brief / 1024)} KB, ${String(SESSION_LIMITS.perSession / 1024 / 1024)} MB per session, ${String(SESSION_LIMITS.ownedPerUser)} sessions per account, ${String(SESSION_LIMITS.membersPerSession)} members per session.</p>
+<h2>If something doesn’t work</h2>
+<ul class="plain">
+<li><strong>“This app hasn’t been allowed to do this.”</strong> You didn’t tick that permission when signing in. Disconnect and connect again, and tick it.</li>
+<li><strong>New tools don’t appear.</strong> Disconnect and connect again; assistants keep the list of tools from when you connected.</li>
+<li><strong>Sign-in asks again and again.</strong> Allow cookies for login.2earl.com, or sign out of other Google accounts in that browser and try again.</li>
+<li><strong>“Not saved: this looks like a key or password.”</strong> Others can read that session; remove the secret and save again.</li>
+<li><strong>“This session is full.”</strong> Delete older entries, or start a new session.</li>
+<li>Anything else: <a href="/contact">contact us</a>.</li>
+</ul>`,
     viewer,
     '/connect',
   );
