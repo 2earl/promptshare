@@ -820,6 +820,9 @@ export function createApp(now: () => number) {
   app.post('/admin/settings/test', async (c) => {
     const owner = requireOwner(c);
     if (owner !== true) return owner;
+    // Only while automatic emails are on: off, nothing is sent to reporters, so there is
+    // nothing to test.
+    if (!(await isOn(c.env.DB, SETTINGS.emailReporters))) return notFound(c);
     const to = text((await c.req.parseBody()).to).trim();
     let result: string;
     try {
@@ -944,8 +947,11 @@ export function createApp(now: () => number) {
       ...input,
     });
     c.executionCtx.waitUntil(notifyOwner(c.env, c.get('now'), id, { kind: 'report', ...input }));
-    const receipt = input.email !== '' && (await isOn(c.env.DB, SETTINGS.emailReporters));
-    if (receipt) c.executionCtx.waitUntil(sendReceipt(c.env, c.get('now'), id, input));
+    // Awaited, so the page says "we emailed you" only when the email actually went out.
+    const receipt =
+      input.email !== '' &&
+      (await isOn(c.env.DB, SETTINGS.emailReporters)) &&
+      (await sendReceipt(c.env, c.get('now'), id, input));
     return html(c, pages.thanks(viewer(c), 'report', id, input.email !== '', receipt));
   });
 
