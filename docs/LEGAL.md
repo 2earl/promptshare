@@ -121,7 +121,10 @@ Claude checked 2earl/website#6 (privacy policy, terms, imprint) and Prompt share
    sends the confirmation of receipt and the decision automatically from noreply@promptshare.cc
    (needs Workers Paid and promptshare.cc onboarded to Email Sending). Off, the owner sends the
    prepared email. Receipts are capped at 3 per address a day, so the form can't be used to mail
-   strangers.
+   strangers. The emails carry the same design as the web pages and as login.2earl.com's emails
+   (`src/mail.ts`): plain text and HTML with the same words, light and dark, no images, remote
+   fonts or tracking; only promptshare.cc and 2earl.com addresses become links, so a reported URL
+   or an explanation can't put someone else's link in our email.
 4. **Micro-enterprise exemptions** (Art. 15, 19) hold only while 2earl stays a micro or small
    enterprise; the yearly transparency report and the online-platform duties apply otherwise.
 5. **Age.** Users must be 16 (terms §3); there is no age check. That is common, and the GDPR's

@@ -1,5 +1,6 @@
 import { EmailMessage } from 'cloudflare:email';
 import { ACTIONS, type Decision, type Message } from './moderation';
+import { mailHtml, mailText, type Mail } from './mail';
 import { mimeMessage, type ReportInput } from './web/messages';
 
 /**
@@ -36,21 +37,60 @@ export function decisionText(
   ].join('\n');
 }
 
-export function receiptText(id: string, report: Pick<ReportInput, 'name' | 'contentUrl'>): string {
-  return [
-    `Hello${report.name ? ` ${report.name}` : ''},`,
-    '',
-    `we received your report of ${report.contentUrl} (reference ${id}).`,
-    'A person will review it, and we will email you our decision.',
-    '',
-    'Prompt share (2earl)',
-  ].join('\n');
+const REASON = 'You got this email because this address was given in a report to Prompt share.';
+
+/** The receipt a reporter gets (DSA Art. 16(4)). */
+export function receiptMail(id: string, report: Pick<ReportInput, 'name' | 'contentUrl'>): Mail {
+  return {
+    subject: 'Your report to Prompt share',
+    preview: `We received your report (reference ${id}). A person will review it.`,
+    heading: 'We received your report',
+    body: [
+      `Hello${report.name ? ` ${report.name}` : ''},`,
+      `we received your report of ${report.contentUrl}.`,
+      'A person will review it, and we will email you our decision.',
+    ],
+    facts: [['Reference', id]],
+    after: ['If you didn’t send this report, you can ignore this email.'],
+    reason: REASON,
+  };
+}
+
+/** The decision as a reporter gets it (DSA Art. 16(5)): the same words as decisionText. */
+export function decisionMail(
+  message: Pick<Message, 'id' | 'name' | 'contentUrl'>,
+  decision: Decision,
+): Mail {
+  return {
+    subject: 'Our decision on your report',
+    preview: `Our decision: ${ACTIONS[decision.action]}.`,
+    heading: 'Our decision on your report',
+    body: [
+      `Hello${message.name ? ` ${message.name}` : ''},`,
+      `thank you for your report of ${message.contentUrl ?? 'content on Prompt share'}.`,
+      `Our decision: ${ACTIONS[decision.action]}.`,
+      decision.explanation,
+    ],
+    facts: [['Reference', message.id]],
+    after: [
+      'The decision was made by a person, not by automated means. If you disagree, reply to this email.',
+      'You can also turn to an out-of-court dispute settlement body or a court.',
+    ],
+    reason: REASON,
+  };
 }
 
 /** Sends one email to a reporter. Failures are logged and leave the report as it is. */
-async function toReporter(env: Env, to: string, subject: string, text: string): Promise<boolean> {
+async function toReporter(env: Env, to: string, mail: Mail): Promise<boolean> {
   try {
-    await env.MAILER.send({ to, from: SENDER, replyTo: REPLY_TO, subject, text });
+    await env.MAILER.send({
+      to,
+      from: SENDER,
+      replyTo: REPLY_TO,
+      subject: mail.subject,
+      text: mailText(mail),
+      html: mailHtml(mail),
+    });
     return true;
   } catch (error) {
     const code = (error as { code?: unknown }).code;
@@ -74,12 +114,7 @@ export async function sendReceipt(
     .bind(report.email, now - 24 * 60 * 60)
     .first<{ n: number }>();
   if ((recent?.n ?? 0) >= RECEIPTS_PER_ADDRESS_PER_DAY) return false;
-  const sent = await toReporter(
-    env,
-    report.email,
-    'Your report to Prompt share',
-    receiptText(id, report),
-  );
+  const sent = await toReporter(env, report.email, receiptMail(id, report));
   if (sent)
     await env.DB.prepare('UPDATE messages SET receipt_sent_at = ? WHERE id = ?')
       .bind(now, id)
@@ -94,12 +129,7 @@ export async function sendDecision(
   decision: Decision,
 ): Promise<boolean> {
   if (!message.email) return false;
-  const sent = await toReporter(
-    env,
-    message.email,
-    'Our decision on your report',
-    decisionText(message, decision),
-  );
+  const sent = await toReporter(env, message.email, decisionMail(message, decision));
   if (sent)
     await env.DB.prepare('UPDATE messages SET decision_sent_at = ? WHERE id = ?')
       .bind(now, message.id)

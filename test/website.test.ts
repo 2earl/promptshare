@@ -4,7 +4,8 @@ import { deleteUserData, exportUserData } from '../src/account';
 import { acceptInvitation } from '../src/sessions';
 import { safeReturnTo } from '../src/web/http';
 import { getMessage, moderationCleanup } from '../src/moderation';
-import { remindOwner, sendDecision, sendReceipt } from '../src/notices';
+import { mailHtml, mailText } from '../src/mail';
+import { decisionMail, receiptMail, remindOwner, sendDecision, sendReceipt } from '../src/notices';
 import { mimeMessage, notifyOwner } from '../src/web/messages';
 import { TOOL_DOCS, timeTag } from '../src/web/pages';
 import { shareCleanup, sharePrompt } from '../src/shares';
@@ -980,7 +981,13 @@ describe('emailing reporters (switch on the moderation page)', () => {
 
 describe('the decision email to a reporter', () => {
   it('goes to the reporter from noreply@promptshare.cc, replies to legal@, and is recorded', async () => {
-    const sent: { to: string; from: { email: string }; replyTo: string; text: string }[] = [];
+    const sent: {
+      to: string;
+      from: { email: string };
+      replyTo: string;
+      text: string;
+      html: string;
+    }[] = [];
     const mailEnv = Object.create(env) as Env;
     Object.defineProperty(mailEnv, 'MAILER', {
       value: {
@@ -1013,7 +1020,62 @@ describe('the decision email to a reporter', () => {
     });
     expect(sent[0]?.text).toContain('Spam is against the terms.');
     expect(sent[0]?.text).toContain('not by automated means');
+    expect(sent[0]?.html).toContain('Our decision on your report');
+    expect(sent[0]?.html).toContain('Spam is against the terms.');
     expect(await count('messages', "id = 'r' AND decision_sent_at = 5")).toBe(1);
+  });
+});
+
+describe('how reporter emails look (LEGAL.md §2)', () => {
+  const decision = {
+    id: 'd',
+    createdAt: 2,
+    contentType: 'prompt' as const,
+    contentId: 'x',
+    sessionId: null,
+    action: 'remove' as const,
+    ground: 'terms' as const,
+    law: null,
+    explanation: 'It said <b>buy now</b> & linked https://evil.example/x.',
+    untilAt: null,
+    contentTitle: 'T',
+    reportBased: true,
+  };
+
+  it('carries the band, the wordmark and the reference, light and dark', () => {
+    const html = mailHtml(
+      receiptMail('ref-1', { name: 'Rita', contentUrl: 'https://promptshare.cc/p/x' }),
+    );
+    expect(html).toMatch(/^<!doctype html>/);
+    for (const colour of ['#ed1c24', '#f15a24', '#f7931e', '#fbb03b'])
+      expect(html).toContain(colour);
+    expect(html).toContain('Prompt share');
+    expect(html).toContain('ref-1');
+    expect(html).toContain('prefers-color-scheme: dark');
+    expect(html).toContain('https://2earl.com/privacy');
+    expect(html).not.toMatch(/<img|<script|url\(/i);
+  });
+
+  it('escapes what people wrote and links only our own addresses', () => {
+    const mail = decisionMail(
+      { id: 'r', name: '<Rita>', contentUrl: 'https://promptshare.cc/p/x' },
+      decision,
+    );
+    const html = mailHtml(mail);
+    expect(html).toContain('&lt;b&gt;buy now&lt;/b&gt; &amp;');
+    expect(html).toContain('Hello &lt;Rita&gt;');
+    expect(html).not.toContain('<b>buy now');
+    expect(html).toContain('href="https://promptshare.cc/p/x"');
+    expect(html).not.toContain('href="https://evil.example');
+  });
+
+  it('keeps the plain text readable on its own', () => {
+    const text = mailText(decisionMail({ id: 'r', name: '', contentUrl: null }, decision));
+    expect(text).toContain('content on Prompt share');
+    expect(text).toContain('Our decision: ');
+    expect(text).toContain('Reference: r');
+    expect(text).toContain('not by automated means');
+    expect(text).toContain('Prompt share by 2earl · https://promptshare.cc');
   });
 });
 
