@@ -83,6 +83,7 @@ import {
 } from './http';
 import { notifyOwner, storeMessage, validateContact, validateReport } from './messages';
 import * as pages from './pages';
+import { mailHtml, mailText, type Mail } from '../mail';
 
 /** The website at promptshare.cc (docs/DESIGN.md §3, phase C1). */
 
@@ -1081,8 +1082,19 @@ export function createApp(now: () => number) {
         to,
         from: { email: 'noreply@promptshare.cc', name: 'Prompt share' },
         replyTo: 'legal@2earl.com',
-        subject: 'Prompt share: test email',
-        text: 'This is a test from the Prompt share moderation settings. Sending to any address works.',
+        ...(() => {
+          const mail: Mail = {
+            subject: 'Prompt share: test email',
+            preview: 'Sending to any address works.',
+            heading: 'Test email',
+            body: [
+              'This is a test from the Prompt share moderation settings. Sending to any address works.',
+            ],
+            reason:
+              'You got this email because the Prompt share owner sent a test to this address.',
+          };
+          return { subject: mail.subject, text: mailText(mail), html: mailHtml(mail) };
+        })(),
       });
       result = `Sent to ${to}. Sending to any address works.`;
     } catch (error) {
