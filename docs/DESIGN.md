@@ -36,7 +36,7 @@ There are two ways in:
 
 | # | Decision | By |
 |---|---|---|
-| D1 | Repository `2earl/promptshare`, public, AGPL-3.0, same protections as login and mcp | Owner, 2026-11-09 |
+| D1 | Repository `2earl/promptshare`, private, proprietary (public under AGPL-3.0 until 2026-11-14), same protections as login and mcp | Owner, 2026-11-09; 2026-11-14 |
 | D2 | Website on `promptshare.cc` (registered) | Owner, 2026-11-09 |
 | D3 | Prompts are private or public; public means visible to signed-in 2earl users only | Owner, 2026-11-09 |
 | D4 | Shared sessions are always private; people join by invitation only | Owner, 2026-11-09 |

@@ -32,4 +32,4 @@ Please report vulnerabilities privately. See [SECURITY.md](SECURITY.md).
 
 ## License
 
-[AGPL-3.0](LICENSE)
+Proprietary. All rights reserved; see [LICENSE](LICENSE).

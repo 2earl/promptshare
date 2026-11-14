@@ -1,32 +1,26 @@
 # Security Policy
 
-This repository contains Prompt share: the website at `promptshare.cc` and the MCP tools offered
-through the 2earl MCP gateway. It holds users' prompts and the conversation state they share.
-Please do **not** report security vulnerabilities through public issues, discussions or pull
-requests.
+This repository contains Prompt share: the website at `promptshare.cc` and the MCP tools offered through the 2earl MCP
+gateway. It is private and proprietary.
 
 ## Reporting a vulnerability
 
-Use GitHub's private vulnerability reporting:
-**Security → Report a vulnerability** on this repository.
+Write to **legal@2earl.com** with "Security" in the subject. The same contact is published at
+<https://2earl.com/.well-known/security.txt>. Please don't disclose it before it's fixed.
 
 Include as much of the following as you can:
 
-- affected page, tool or component
+- affected endpoint, flow or component
 - steps to reproduce or a proof of concept
 - impact you believe it has
 
-You will receive an acknowledgement after the report is reviewed. Please allow time for a fix
-before any public disclosure.
+You will receive an acknowledgement after the report is reviewed.
 
 ## Scope
 
-In scope: the code in this repository and its deployment at `promptshare.cc`. Sign-in and tokens
-are [2earl/login](https://github.com/2earl/login)'s; the assistant endpoint is
-[2earl/mcp](https://github.com/2earl/mcp)'s. Report issues in those repositories there.
+In scope: the code in this repository and its deployment at `promptshare.cc`. Sign-in and
+tokens are 2earl/login's; the assistant endpoint is 2earl/mcp's. The same address takes reports
+for all of them.
 
 Out of scope: denial-of-service through volumetric traffic, social engineering, and findings in
-third-party services (Cloudflare, GitHub).
-
-Illegal or harmful content on Prompt share is not a security issue: use the **Report** link on
-the content or `promptshare.cc/report`.
+third-party services (Google, Cloudflare, GitHub).
