@@ -1,7 +1,7 @@
 # Security Policy
 
 This repository contains Prompt share: the website at `promptshare.cc` and the MCP tools offered through the 2earl MCP
-gateway. It is private and proprietary.
+gateway. It is public to read but proprietary: see LICENSE.
 
 ## Reporting a vulnerability
 
