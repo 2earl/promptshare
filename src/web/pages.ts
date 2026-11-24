@@ -20,6 +20,7 @@ import { SENSITIVE_CONSENT_TEXT, type ConsentDecision } from '../consent';
 import { ACTIONS, type Decision, type Message, type ReportedContent } from '../moderation';
 import { decisionText } from '../notices';
 import { CATEGORIES, MESSAGE_LIMITS, type Errors } from './messages';
+import { languageSwitcher } from './i18n';
 
 /**
  * Server-rendered pages for promptshare.cc. Every dynamic value goes through `esc`. No scripts
@@ -90,7 +91,7 @@ export function layout(title: string, main: string, viewer: Viewer, current = ''
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · Prompt share</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/app.css?v=3">
+<link rel="stylesheet" href="/app.css?v=4">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -110,6 +111,7 @@ ${main}
 <a href="https://2earl.com/terms">Terms</a>
 <a href="https://2earl.com/imprint">Imprint</a>
 </nav>
+${languageSwitcher()}
 <p>A 2earl service. Sign-in by <a href="https://login.2earl.com">login.2earl.com</a>.</p>
 </footer>
 </body>

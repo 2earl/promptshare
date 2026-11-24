@@ -189,6 +189,17 @@ main {
 .foot a {
   color: var(--muted);
 }
+/* The language switcher (docs/DESIGN.md §9a): each language in its own name. */
+.foot .languages {
+  margin-top: 0.75rem;
+}
+.foot .languages a {
+  text-decoration: none;
+}
+.foot .languages a[aria-current='true'] {
+  color: var(--fg);
+  font-weight: 600;
+}
 
 /* ---- Home ---------------------------------------------------------------------------------- */
 

@@ -1,3 +1,4 @@
+import { DEFAULT_LOCALE, translate, type Locale } from './web/i18n';
 /**
  * How Prompt share's emails look (LEGAL.md §2): the same design as login.2earl.com's
  * (2earl/login src/mail.ts) and as these web pages: the four-colour band, the wordmark, one
@@ -81,6 +82,23 @@ function isOwnUrl(url: string): boolean {
 
 // ---- Text -------------------------------------------------------------------------------------
 
+/** The mail in a language: every sentence through the catalog (src/web/locales). */
+export function localizeMail(mail: Mail, locale: Locale): Mail {
+  if (locale === DEFAULT_LOCALE) return mail;
+  const t = (text: string) => translate(text, locale);
+  return {
+    ...mail,
+    subject: t(mail.subject),
+    preview: t(mail.preview),
+    heading: t(mail.heading),
+    body: mail.body.map(t),
+    reason: t(mail.reason),
+    ...(mail.action ? { action: { ...mail.action, label: t(mail.action.label) } } : {}),
+    ...(mail.facts ? { facts: mail.facts.map(([label, value]) => [t(label), value]) } : {}),
+    ...(mail.after ? { after: mail.after.map(t) } : {}),
+  };
+}
+
 export function mailText(mail: Mail): string {
   const lines: string[] = [mail.heading, ''];
   for (const p of mail.body) lines.push(p, '');
@@ -140,7 +158,7 @@ function button(label: string, url: string, showAddress: boolean): string {
     `<a href="${href}" style="display:inline-block;padding:13px 22px;font:600 15px/1 ${FONT};color:${C.fg};text-decoration:none;border-radius:10px">${escapeHtml(label)}</a>` +
     '</td></tr></table>' +
     (showAddress
-      ? `<p class="muted" style="margin:0 0 24px;font:400 13px/1.5 ${FONT};color:${C.muted};word-break:break-all">Or paste this address into your browser: <a href="${href}" class="link" style="color:${C.link}">${href}</a></p>`
+      ? `<p class="muted" style="margin:0 0 24px;font:400 13px/1.5 ${FONT};color:${C.muted};word-break:break-all">${escapeHtml(translate('Or paste this address into your browser:', DEFAULT_LOCALE))} <a href="${href}" class="link" style="color:${C.link}">${href}</a></p>`
       : '<div style="height:12px;line-height:12px;font-size:0">&nbsp;</div>')
   );
 }
@@ -156,11 +174,12 @@ function factsTable(facts: [string, string][]): string {
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="facts" style="margin:4px 0 24px;border-collapse:collapse;border-top:1px solid ${C.rule};border-bottom:1px solid ${C.rule}">${rows}</table>`;
 }
 
-export function mailHtml(mail: Mail): string {
+export function mailHtml(mail: Mail, locale: Locale = DEFAULT_LOCALE): string {
+  const t = (text: string) => escapeHtml(translate(text, locale));
   const footerLinks = [
     `<a href="${SITE}" class="muted" style="color:${C.muted}">Prompt share</a>`,
-    `<a href="https://2earl.com/privacy" class="muted" style="color:${C.muted}">Privacy</a>`,
-    `<a href="https://2earl.com/imprint" class="muted" style="color:${C.muted}">Imprint</a>`,
+    `<a href="https://2earl.com${locale === DEFAULT_LOCALE ? '' : `/${locale}`}/privacy" class="muted" style="color:${C.muted}">${t('Privacy')}</a>`,
+    `<a href="https://2earl.com${locale === DEFAULT_LOCALE ? '' : `/${locale}`}/imprint" class="muted" style="color:${C.muted}">${t('Imprint')}</a>`,
   ]
     .filter(Boolean)
     .join(' &nbsp;·&nbsp; ');
@@ -174,7 +193,7 @@ export function mailHtml(mail: Mail): string {
     (mail.facts?.length ? factsTable(mail.facts) : '') +
     (mail.after ?? []).map((p) => paragraph(p, true)).join('');
   return (
-    '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+    `<!doctype html><html lang="${locale}"><head><meta charset="utf-8">` +
     '<meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<meta name="color-scheme" content="light dark"><meta name="supported-color-schemes" content="light dark">' +
     `<title>${escapeHtml(mail.subject)}</title>` +
@@ -198,7 +217,7 @@ export function mailHtml(mail: Mail): string {
     `<div class="card card-body" style="padding:32px 32px 20px;background:${C.surface}">${content}</div>` +
     '</td></tr>' +
     `<tr><td style="padding:20px 4px 0;font:400 13px/1.6 ${FONT};color:${C.muted}" class="muted">` +
-    `<p style="margin:0 0 6px">${escapeHtml(mail.reason)} Reply to this email to reach a person.</p>` +
+    `<p style="margin:0 0 6px">${escapeHtml(mail.reason)} ${t('Reply to this email to reach a person.')}</p>` +
     `<p style="margin:0">${footerLinks}</p>` +
     '</td></tr></table></td></tr></table></body></html>'
   );

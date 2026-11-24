@@ -1,3 +1,4 @@
+import type { Locale } from './i18n';
 import type { Context } from 'hono';
 
 /** Request plumbing for the website (docs/DESIGN.md §3). Patterns from 2earl/login src/http.ts. */
@@ -14,7 +15,10 @@ export type WebEnv = Env & {
   CONTACT_TO?: string;
 };
 
-export type AppEnv = { Bindings: WebEnv; Variables: { session: WebSession | null; now: number } };
+export type AppEnv = {
+  Bindings: WebEnv;
+  Variables: { session: WebSession | null; now: number; locale: Locale };
+};
 export type AppContext = Context<AppEnv>;
 
 export const SESSION_COOKIE = '__Host-session';
@@ -80,4 +84,6 @@ export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'Cross-Origin-Resource-Policy': 'same-origin',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
   'Content-Security-Policy': CSP,
+  // Only 2earl.com is for search engines: promptshare.cc's pages stay out of search results.
+  'X-Robots-Tag': 'noindex, nofollow',
 };

@@ -458,6 +458,28 @@ login's "Download your data" includes it.
   - deploys only from `main`, through `production` with the owner's approval;
   - SHA-pinned actions, release-age delay, Dependabot, CodeQL.
 
+## 9a. Languages
+
+promptshare.cc speaks English and Turkish, with the engine login.2earl.com uses (`src/web/i18n.ts`;
+login's DESIGN §4.31 has the details).
+
+- **Which language:** `?lang=` (remembered in `__Host-lang` for a year), then the cookie, then the
+  browser's `Accept-Language`, then English. The footer links every language, each named in its own.
+  Sign-in passes the language to login.2earl.com as `ui_locales`, so its pages match.
+- **How:** pages are written in English; the finished HTML is translated sentence by sentence from
+  `src/web/locales/<code>.ts`. People's text (prompts, entries, handles, names) is never in the
+  catalog, so it stays as written. A missing sentence stays English.
+- **Emails** to a reporter go in the language the form was sent in (`messages.locale`, migration
+  0010). The operator's own notifications stay English.
+- **MCP tools** stay English: their descriptions are read by assistants, not people, and
+  assistants answer in the user's language anyway.
+- **Search engines:** not for promptshare.cc: `X-Robots-Tag: noindex, nofollow` and `robots.txt`
+  disallows everything. 2earl.com is the only indexed 2earl site.
+- **Coverage:** `test/i18n.test.ts` fails when a sentence of the public pages has no Turkish.
+
+Adding a language: add it to `LOCALES` and `LOCALE_NAMES` in `src/web/i18n.ts`, write
+`src/web/locales/<code>.ts`, register it in `CATALOGS`.
+
 ## 10. Phases
 
 | Phase | Deliverable | State |
@@ -476,6 +498,7 @@ login's "Download your data" includes it.
 | P4 | Prompt variables with defaults, filled by `get_prompt` (§4.2); resuming a session from its brief (`since: "brief"`, §5.2) | Built |
 | P5 | Earlier versions of a prompt: kept on change, listed, read and restored, by the owner only (§4.3) | Built |
 | P6 | The prompt menu: own prompts and resuming a session as MCP prompts, through the gateway (§4.4) | Built |
+| L1 | Turkish, and a catalog per language (§9a); not for search engines | Built |
 
 Public prompts can't exist before C2, because publishing is a website action. So nothing public
 is hosted before the legal items are done.
