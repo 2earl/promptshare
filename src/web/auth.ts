@@ -1,3 +1,4 @@
+import { DEFAULT_LOCALE, currentLocale } from './i18n';
 import type { AppContext, WebSession } from './http';
 
 /**
@@ -101,6 +102,8 @@ export async function startSignIn(
     code_challenge_method: 'S256',
     resource: env.SITE_ORIGIN,
     ...(options.secondFactor ? { acr_values: ACR_AAL2 } : {}),
+    // login.2earl.com shows its pages in the same language (OpenID Connect ui_locales).
+    ...(currentLocale() !== DEFAULT_LOCALE ? { ui_locales: currentLocale() } : {}),
   });
   return { cookieValue, location: `${env.AUTHORIZATION_SERVER}/authorize?${query.toString()}` };
 }

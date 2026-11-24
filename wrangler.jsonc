@@ -3,7 +3,7 @@
   "name": "promptshare",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
-  "compatibility_flags": ["global_fetch_strictly_public"],
+  "compatibility_flags": ["global_fetch_strictly_public", "nodejs_als"],
 
   // The website is served at https://promptshare.cc (custom domain: infra/worker.tf). The gateway
   // (GatewayMcp) and login (AccountEvents) reach the Worker over Service Bindings.

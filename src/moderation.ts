@@ -43,6 +43,8 @@ export interface Message {
   closedAt: number | null;
   receiptSentAt: number | null;
   decisionSentAt: number | null;
+  /** The language the form was sent in, for emails back (docs/DESIGN.md "Languages"). */
+  locale: string | null;
 }
 
 interface MessageRow {
@@ -61,6 +63,7 @@ interface MessageRow {
   closed_at: number | null;
   receipt_sent_at: number | null;
   decision_sent_at: number | null;
+  locale: string | null;
 }
 
 const toMessage = (row: MessageRow): Message => ({
@@ -79,6 +82,7 @@ const toMessage = (row: MessageRow): Message => ({
   closedAt: row.closed_at,
   receiptSentAt: row.receipt_sent_at,
   decisionSentAt: row.decision_sent_at,
+  locale: row.locale,
 });
 
 export async function listMessages(db: D1Database, open: boolean): Promise<Message[]> {

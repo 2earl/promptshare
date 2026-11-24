@@ -1,3 +1,12 @@
+import {
+  DEFAULT_LOCALE,
+  LOCALE_COOKIE,
+  LOCALE_COOKIE_MAX_AGE,
+  isLocale,
+  localizeHtml,
+  pickLocale,
+  withLocale,
+} from './i18n';
 import { Hono } from 'hono';
 import { needsAsking, recordSensitiveConsent, sensitiveConsent } from '../consent';
 import { sendDecision, sendReceipt } from '../notices';
@@ -104,6 +113,30 @@ function html(c: AppContext, body: string, status: 200 | 400 | 403 | 404 | 429 |
 
 export function createApp(now: () => number) {
   const app = new Hono<AppEnv>();
+
+  // Language (docs/DESIGN.md "Languages"): ?lang= (remembered in a cookie), the cookie, then the
+  // browser's. Pages are written in English and translated after the route rendered them.
+  app.use('*', async (c: AppContext, next) => {
+    const chosen = c.req.query('lang');
+    const locale = pickLocale({
+      query: chosen,
+      cookie: readCookie(c.req.header('Cookie'), LOCALE_COOKIE),
+      acceptLanguage: c.req.header('Accept-Language'),
+    });
+    c.set('locale', locale);
+    await withLocale({ locale, url: new URL(c.req.url) }, () => next());
+    if (isLocale(chosen) && c.req.method === 'GET') {
+      setCookie(c, LOCALE_COOKIE, chosen, LOCALE_COOKIE_MAX_AGE);
+    }
+    c.header('Content-Language', locale);
+    c.header('Vary', 'Accept-Language, Cookie', { append: true });
+    if (locale === DEFAULT_LOCALE) return;
+    if (!(c.res.headers.get('Content-Type') ?? '').startsWith('text/html')) return;
+    const page = await c.res.text();
+    const headers = new Headers(c.res.headers);
+    headers.delete('Content-Length');
+    c.res = new Response(localizeHtml(page, locale), { status: c.res.status, headers });
+  });
 
   app.use('*', async (c: AppContext, next) => {
     c.set('now', now());

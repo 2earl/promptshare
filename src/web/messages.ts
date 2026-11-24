@@ -1,3 +1,4 @@
+import { currentLocale } from './i18n';
 import { EmailMessage } from 'cloudflare:email';
 import type { WebEnv } from './http';
 
@@ -92,8 +93,8 @@ export async function storeMessage(
   const id = crypto.randomUUID();
   await db
     .prepare(
-      `INSERT INTO messages (id, kind, uid, name, email, content_url, category, body, good_faith, created_at, decision_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, kind, uid, name, email, content_url, category, body, good_faith, created_at, decision_id, locale)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -107,6 +108,7 @@ export async function storeMessage(
       message.goodFaith ? 1 : 0,
       now,
       message.decisionId ?? null,
+      currentLocale(),
     )
     .run();
   return id;

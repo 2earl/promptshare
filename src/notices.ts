@@ -1,6 +1,7 @@
 import { EmailMessage } from 'cloudflare:email';
 import { ACTIONS, type Decision, type Message } from './moderation';
-import { mailHtml, mailText, type Mail } from './mail';
+import { localizeMail, mailHtml, mailText, type Mail } from './mail';
+import { DEFAULT_LOCALE, currentLocale, isLocale } from './web/i18n';
 import { mimeMessage, type ReportInput } from './web/messages';
 
 /**
@@ -81,7 +82,15 @@ export function decisionMail(
 }
 
 /** Sends one email to a reporter. Failures are logged and leave the report as it is. */
-async function toReporter(env: Env, to: string, mail: Mail): Promise<boolean> {
+async function toReporter(
+  env: Env,
+  to: string,
+  original: Mail,
+  language: string | null,
+): Promise<boolean> {
+  // In the language the reporter used the form in (docs/DESIGN.md "Languages").
+  const locale = isLocale(language) ? language : DEFAULT_LOCALE;
+  const mail = localizeMail(original, locale);
   try {
     await env.MAILER.send({
       to,
@@ -89,7 +98,7 @@ async function toReporter(env: Env, to: string, mail: Mail): Promise<boolean> {
       replyTo: REPLY_TO,
       subject: mail.subject,
       text: mailText(mail),
-      html: mailHtml(mail),
+      html: mailHtml(mail, locale),
     });
     return true;
   } catch (error) {
@@ -114,7 +123,7 @@ export async function sendReceipt(
     .bind(report.email, now - 24 * 60 * 60)
     .first<{ n: number }>();
   if ((recent?.n ?? 0) >= RECEIPTS_PER_ADDRESS_PER_DAY) return false;
-  const sent = await toReporter(env, report.email, receiptMail(id, report));
+  const sent = await toReporter(env, report.email, receiptMail(id, report), currentLocale());
   if (sent)
     await env.DB.prepare('UPDATE messages SET receipt_sent_at = ? WHERE id = ?')
       .bind(now, id)
@@ -129,7 +138,12 @@ export async function sendDecision(
   decision: Decision,
 ): Promise<boolean> {
   if (!message.email) return false;
-  const sent = await toReporter(env, message.email, decisionMail(message, decision));
+  const sent = await toReporter(
+    env,
+    message.email,
+    decisionMail(message, decision),
+    message.locale,
+  );
   if (sent)
     await env.DB.prepare('UPDATE messages SET decision_sent_at = ? WHERE id = ?')
       .bind(now, message.id)
