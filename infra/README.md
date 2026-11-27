@@ -14,17 +14,22 @@ edit (Zone Settings covers it), and Workers Routes edit.
 
 ## How changes are applied
 
-1. Open a PR that changes files here. HCP Terraform (workspace `2earl-promptshare`, working
-   directory `infra`) posts a speculative plan on the PR.
-2. Merge. HCP queues a run on `main`.
-3. The owner reviews the plan in HCP and confirms the apply. Apply is never automatic.
+HCP Terraform (workspace `2earl-promptshare`) keeps the state only; Terraform runs in GitHub Actions
+(`.github/workflows/infra.yml`), so a run never depends on HCP fetching the repository.
 
-Credentials: `CLOUDFLARE_API_TOKEN` is a sensitive **environment** variable in the workspace (not a
-Terraform variable). Nothing in this directory may contain a secret.
+1. Open a PR that changes files here. The `check` job runs `terraform fmt`, `init` and
+   `validate`, without secrets.
+2. Merge. On `main`, the `plan` job waits for the owner's approval (environment `production`),
+   then writes the plan to the run's summary.
+3. If there are changes, the `apply` job waits for a second approval and applies only if a fresh
+   plan is identical to the one reviewed. Apply is never automatic.
+
+Credentials, in the repository's `production` environment: `TF_API_TOKEN` (an HCP Terraform team
+token) and `CLOUDFLARE_INFRA_API_TOKEN`. Nothing in this directory may contain a secret.
 
 ## First deployment
 
-1. Merge the PR that adds this directory and confirm the HCP apply: it creates the D1 database.
+1. Merge the PR that adds this directory and approve the `infra` run: it creates the D1 database.
    The `deploy` run it starts stops by itself while `wrangler.jsonc` has the placeholder ID.
 2. A second PR puts the `d1_database_id` output into `wrangler.jsonc`. After merging it, approve
    the `deploy` run.
